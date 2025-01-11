@@ -65,20 +65,19 @@ class LiquidityPool:
             return self.hold_value - self.value 
         else:
             return 0
-    
-    def create_range(self, seed, lower_pct, upper_pct):
+        
+    @property
+    def ratio(self):
+        return (self.native_price - self.lower_range) / (self.upper_range - self.lower_range)
+        
+    def get_price_ranges(self, lower_pct, upper_pct):
         # from a USD perspective, more money will be invested in token x if the ratio favors the upper range
-        ratio = upper_pct / (upper_pct  + lower_pct)
-        self.token_x.balance = seed * ratio / self.token_x.price
-        self.token_y.balance = seed * (1 - ratio) / self.token_y.price
         self.upper_range = self.native_price * (1 + upper_pct/100)
         self.lower_range = self.native_price / (1 + lower_pct/100)
-        # re-calc upper range to make liquidity come out even
-        self.upper_range = um.calc_upper_range_pb(self.token_x.balance, self.token_y.balance, self.lower_range, self.native_price)
-        # Calc token amounts based on desired ratio and liquidity
-        liq_x = um.liquidity_x(self.token_x.balance, self.native_price, self.upper_range)
-        liq_y = um.liquidity_y(self.token_y.balance, self.native_price, self.lower_range)
-        self.liquidity = min(liq_x, liq_y)
+        
+    def initialize_range(self, seed, lower_pct, upper_pct):
+        self.get_price_ranges(lower_pct, upper_pct)
+        self.add_liquidity(seed)
         # Make note of the initial token values to look at impermanent loss
         if self.initial_setup:
             self.seed = seed
@@ -88,6 +87,17 @@ class LiquidityPool:
             self.init_y_bal = self.token_y.balance
             self.initial_setup = False
 
+    def add_liquidity(self, seed):
+        # As price moves to the upper range (and therefore the "radio"), the amount of x is decreasing and the amount of y is increasing
+        self.token_x.balance = seed * (1 - self.ratio) / self.token_x.price
+        self.token_y.balance = seed * self.ratio / self.token_y.price
+        # re-calc upper range to make liquidity come out even
+        self.upper_range = um.calc_upper_range_pb(self.token_x.balance, self.token_y.balance, self.lower_range, self.native_price)
+        # Calculate liquidity
+        liq_x = um.liquidity_x(self.token_x.balance, self.native_price, self.upper_range)
+        liq_y = um.liquidity_y(self.token_y.balance, self.native_price, self.lower_range)
+        self.liquidity = min(liq_x, liq_y)
+        
     def update_token_balances(self, duration):
         """ 
         This should be run after token price changes are made 
@@ -107,7 +117,8 @@ class LiquidityPool:
 
     def rebalance(self, lower_pct, upper_pct):
         seed = self.value
-        self.create_range(seed, lower_pct, upper_pct)
+        self.get_price_ranges(lower_pct, upper_pct)
+        self.add_liquidity(seed)
 
     def calc_apr_for_duration(self):
         if self.impermanent_loss > 0:
@@ -115,12 +126,21 @@ class LiquidityPool:
         else:
             self.apr = 0
 
+    def coumpound_fees(self, fees):
+        """
+        Doing this will slightly update the ranges given liquidity never coming out exact
+        On a platfom like VFAT, you end up refunded a small amount of the compounded fees to make it round out
+        """
+        seed = self.value + fees
+        self.add_liquidity(seed)
+        self.calc_apr_for_duration()
+
     def __repr__(self):
         return (
-            f"{self.token_x.symbol}: {self.token_x.balance} | {self.token_y.symbol}: {self.token_y.balance}\n"
+            f"{self.token_x.symbol}: {self.token_x.balance:.6f} (${self.token_x.value:.2f})| {self.token_y.symbol}: {self.token_y.balance:.6f} (${self.token_y.value:.2f})\n" 
             f"LP Value: ${self.value:.2f}\n"
-            f"Current Price: {self.native_price} in {self.token_y.symbol}/{self.token_x.symbol}\n"
-            f"Range: {self.lower_range} ~ {self.upper_range}\n"
+            f"Current Price: {self.native_price:.6f} in {self.token_y.symbol}/{self.token_x.symbol}\n"
+            f"Range: {self.lower_range:.6f} ~ {self.upper_range:.6f}\n"
             f"Hold Value: ${self.hold_value:.2f}\n"
             f"Impermanent Loss: ${self.impermanent_loss:.2f}\n"
             f"Fee APR required to offset IL: {self.apr:.1f}%\n"
