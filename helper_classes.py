@@ -1,4 +1,8 @@
 import unimath as um
+import pandas as pd
+import numpy as np
+import requests
+import time
 
 class Token:
     def __init__(self, symbol, price):
@@ -60,11 +64,10 @@ class LiquidityPool:
             
     @property
     def impermanent_loss(self):
-        loss = self.hold_value - self.value
-        if loss > 0:
-            return self.hold_value - self.value 
-        else:
-            return 0
+        """
+        Negative value means that holding the LP leads to "impermanent gains"
+        """
+        return self.hold_value - self.value 
         
     @property
     def ratio(self):
@@ -147,3 +150,139 @@ class LiquidityPool:
         )
 
 
+def get_historical_prices(token_id, start_date: pd.Timestamp, end_date: pd.Timestamp, vs_currency='usd'):
+    start_url = "https://api.coingecko.com/api/v3/coins"
+    url = f"{start_url}/{token_id}/market_chart/range"
+
+    start_timestamp = int(start_date.timestamp())
+    end_timestamp = int(end_date.timestamp())
+
+    params = {
+        'vs_currency': vs_currency,
+        'from': start_timestamp,
+        'to': end_timestamp
+    }
+
+    print(f'Getting historical in_data for {token_id}')
+    check = True
+    increment = 1
+    while check:
+        if increment > 10:
+            raise Exception("Tried 10 times with no valid response, aborting")
+        print(f"Try #{increment}")
+        try:
+            response = requests.get(url, params=params)
+            data = response.json()
+            prices = pd.DataFrame(data['prices'], columns=['timestamp', 'price'])
+            prices.set_index('timestamp', inplace=True)
+            prices.index = pd.to_datetime(prices.index, unit='ms')
+            prices['price'] = prices['price'].astype('float64')
+            prices2 = prices['price']
+            volumes = pd.DataFrame(data['total_volumes'], columns=['timestamp', 'volume'])
+            volumes.set_index('timestamp', inplace=True)
+            volumes.index = pd.to_datetime(volumes.index, unit='ms')
+            volumes2 = volumes['volume']
+            return [prices2, volumes2]
+        except Exception as e:
+            wait_sec = 15 * 2 ** increment
+            print(f"Error fetching in_data due to {e}")
+            print(f"Waiting {wait_sec} seconds and then will re-try")
+            time.sleep(wait_sec)
+            increment += 1
+
+
+class Brownian():
+    """
+    A Brownian motion class constructor
+    """
+    def __init__(self,x0=0):
+        """
+        Init class
+        """
+        assert (type(x0)==float or type(x0)==int or x0 is None), "Expect a float or None for the initial value"
+        
+        self.x0 = float(x0)
+    
+    def gen_random_walk(self,n_step=100):
+        """
+        Generate motion by random walk
+        
+        Arguments:
+            n_step: Number of steps
+            
+        Returns:
+            A NumPy array with `n_steps` points
+        """
+        # Warning about the small number of steps
+        if n_step < 30:
+            print("WARNING! The number of steps is small. It may not generate a good stochastic process sequence!")
+        
+        w = np.ones(n_step)*self.x0
+        
+        for i in range(1,n_step):
+            # Sampling from the Normal distribution with probability 1/2
+            yi = np.random.choice([1,-1])
+            # Weiner process
+            w[i] = w[i-1]+(yi/np.sqrt(n_step))
+        
+        return w
+    
+    def gen_normal(self,n_step=100):
+        """
+        Generate motion by drawing from the Normal distribution
+        
+        Arguments:
+            n_step: Number of steps
+            
+        Returns:
+            A NumPy array with `n_steps` points
+        """
+        if n_step < 30:
+            print("WARNING! The number of steps is small. It may not generate a good stochastic process sequence!")
+        
+        w = np.ones(n_step)*self.x0
+        
+        for i in range(1,n_step):
+            # Sampling from the Normal distribution
+            yi = np.random.normal()
+            # Weiner process
+            w[i] = w[i-1]+(yi/np.sqrt(n_step))
+        
+        return w
+    
+    def stock_price(
+                    self,
+                    s0=100,
+                    mu=0.2,
+                    sigma=0.68,
+                    deltaT=52,
+                    dt=0.1
+                    ):
+        """
+        Models a stock price S(t) using the Weiner process W(t) as
+        `S(t) = S(0).exp{(mu-(sigma^2/2).t)+sigma.W(t)}`
+        
+        Arguments:
+            s0: Iniital stock price, default 100
+            mu: 'Drift' of the stock (upwards or downwards), default 1
+            sigma: 'Volatility' of the stock, default 1
+            deltaT: The time period for which the future prices are computed, default 52 (as in 52 weeks)
+            dt (optional): The granularity of the time-period, default 0.1
+        
+        Returns:
+            s: A NumPy array with the simulated stock prices over the time-period deltaT
+        """
+        n_step = int(deltaT/dt)
+        time_vector = np.linspace(0,deltaT,num=n_step)
+        # Stock variation
+        stock_var = (mu-(sigma**2/2))*time_vector
+        # Forcefully set the initial value to zero for the stock price simulation
+        self.x0=0
+        # Weiner process (calls the `gen_normal` method)
+        weiner_process = sigma*self.gen_normal(n_step)
+        # Add two time series, take exponent, and multiply by the initial stock price
+        s = s0*(np.exp(stock_var+weiner_process))
+        
+        return s
+    
+    
