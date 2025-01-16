@@ -129,6 +129,22 @@ class LiquidityPool:
         else:
             self.apr = 0
 
+    def calc_liquidity(self):
+        """
+        Only use if balances, prices, and ranges are all available and set
+        i.e. this should be used instead of the initialize_range method, but not both
+        """
+        liq_x = um.liquidity_x(self.token_x.balance, self.native_price, self.upper_range)
+        liq_y = um.liquidity_y(self.token_y.balance, self.native_price, self.lower_range)
+        self.liquidity = min(liq_x, liq_y)
+        if self.initial_setup:
+            self.seed = self.value
+            self.init_x_price = self.token_x.price
+            self.init_y_price = self.token_y.price
+            self.init_x_bal = self.token_x.balance
+            self.init_y_bal = self.token_y.balance
+            self.initial_setup = False
+
     def coumpound_fees(self, fees):
         """
         Doing this will slightly update the ranges given liquidity never coming out exact
@@ -285,4 +301,10 @@ class Brownian():
         
         return s
     
+def apy_to_apr(apy, n):
+    """
+    n = compounding periods
+    """
+    apr = ((apy/100 + 1) ** (1/n) - 1) * n
+    return apr * 100
     
