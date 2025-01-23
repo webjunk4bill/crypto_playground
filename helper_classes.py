@@ -13,10 +13,19 @@ class Token:
     @property
     def value(self):
         return self.balance * self.price
+    
+    def __repr__(self):
+        return (
+            f"{self.symbol}: {self.balance}"
+            f"\nPrice: {self.price}"
+            )
+    
+    def __str__(self):
+        return f"{self.symbol}: {self.balance}"
 
 
 class LiquidityPool:
-    def __init__(self, token_x: Token, token_y: Token):
+    def __init__(self, token_x: Token, token_y: Token, tick_spacing=100):
         """
         Native price is y/x price or else liquidity calculations won't work
         token x and y need to be selected such that when the lower range is hit, it is all token x and the upper range is all token y
@@ -24,8 +33,8 @@ class LiquidityPool:
         self.token_x = token_x
         self.token_y = token_y
         self.liquidity = None
-        self.lower_range = None
-        self.upper_range = None
+        self.lower_tick = None
+        self.upper_tick = None
         self.init_x_bal = None
         self.init_x_price = None
         self.init_y_bal = None
@@ -34,10 +43,14 @@ class LiquidityPool:
         self.apr = 0
         self.initial_setup = True
         self.duration = 0
+        self.fees_accrued = 0
+        self.tick_spacing = tick_spacing
+        self.tick_pct = tick_spacing / 100
+        self.dust = 0
     
     @property
     def value(self):
-        return self.token_x.value + self.token_y.value
+        return self.token_x.value + self.token_y.value + self.fees_accrued
     
     @property
     def native_price(self):
@@ -55,9 +68,9 @@ class LiquidityPool:
         Need to deal with USDC being one of the tokens vs something like BTC/ETH LP
         """
         if self.seed:
-            if self.token_x.symbol == 'USDC':
+            if int(self.token_x.price) == 1:
                 return (self.seed / self.init_y_price) * self.token_y.price
-            elif self.token_y.symbol == 'USDC':
+            elif int(self.token_y.price) == 1:
                 return (self.seed / self.init_x_price) * self.token_x.price
             else:
                 return self.init_x_bal * self.token_x.price + self.init_y_bal * self.token_y.price
@@ -71,19 +84,44 @@ class LiquidityPool:
         
     @property
     def ratio(self):
-        return (self.native_price - self.lower_range) / (self.upper_range - self.lower_range)
+        return (self.current_tick - self.lower_tick + 1) / (self.upper_tick - self.lower_tick + 1)
+    
+    @property
+    def current_tick(self):
+        """
+        This is the current price tick
+        """
+        return um.price_to_tick(self.native_price)
+    
+    @property
+    def current_liq_tick_price(self):
+        """
+        This is the price at the current liquidity tick
+        """
+        return um.sqrtp_to_price(um.tick_to_sqrtp(self.current_tick // self.tick_spacing * self.tick_spacing))
+    
+    @property
+    def lower_range(self):
+        return um.sqrtp_to_price(um.tick_to_sqrtp(self.lower_tick))
+    
+    @property
+    def upper_range(self):
+        return um.sqrtp_to_price(um.tick_to_sqrtp(self.upper_tick))
+    
+    def calc_tick_to_price(self, tick):
+        """
+        low_tick: how many ticks below the current tick to start
+        """
+        return um.sqrtp_to_price(um.tick_to_sqrtp(self.current_tick - tick * self.tick_spacing))
         
-    def get_price_ranges(self, lower_pct, upper_pct):
-        # from a USD perspective, more money will be invested in token x if the ratio favors the upper range
-        self.upper_range = self.native_price * (1 + upper_pct/100)
-        self.lower_range = self.native_price / (1 + lower_pct/100)
-        
-    def initialize_range(self, seed, lower_pct, upper_pct):
-        self.get_price_ranges(lower_pct, upper_pct)
+    def setup_new_position(self, seed, ticks_lower, ticks_higher):
+        self.upper_tick = self.current_tick + ticks_higher * self.tick_spacing - 1
+        self.lower_tick = self.current_tick - ticks_lower * self.tick_spacing - 1
         self.add_liquidity(seed)
         # Make note of the initial token values to look at impermanent loss
         if self.initial_setup:
-            self.seed = seed
+            self.seed = self.value
+            self.dust = seed - self.seed
             self.init_x_price = self.token_x.price
             self.init_y_price = self.token_y.price
             self.init_x_bal = self.token_x.balance
@@ -92,20 +130,15 @@ class LiquidityPool:
 
     def add_liquidity(self, seed):
         # As price moves to the upper range (and therefore the "radio"), the amount of x is decreasing and the amount of y is increasing
-        self.token_x.balance = seed * (1 - self.ratio) / self.token_x.price
-        self.token_y.balance = seed * self.ratio / self.token_y.price
-        # re-calc upper range to make liquidity come out even
-        self.upper_range = um.calc_upper_range_pb(self.token_x.balance, self.token_y.balance, self.lower_range, self.native_price)
+        token_x_bal = seed * (1 - self.ratio) / self.token_x.price
+        token_y_bal = seed * self.ratio / self.token_y.price
         # Calculate liquidity
-        liq_x = um.liquidity_x(self.token_x.balance, self.native_price, self.upper_range)
-        liq_y = um.liquidity_y(self.token_y.balance, self.native_price, self.lower_range)
+        liq_x = um.liquidity_x(token_x_bal, self.native_price, self.upper_range)
+        liq_y = um.liquidity_y(token_y_bal, self.native_price, self.lower_range)
         self.liquidity = min(liq_x, liq_y)
+        self.update_token_balances(0)  # need to align with ticks, not always even
         
     def update_token_balances(self, duration):
-        """ 
-        This should be run after token price changes are made 
-        The duration is how long has elapsed between the initial deposit and the current price.  Used to calculate the APR.
-        """
         self.duration += duration  # add duration days
         # Check to make sure not out of range
         if self.native_price < self.lower_range:
@@ -118,22 +151,25 @@ class LiquidityPool:
         self.token_y.balance = um.calc_amount_y(self.liquidity, price, self.lower_range)
         self.calc_apr_for_duration()
 
-    def rebalance(self, lower_pct, upper_pct):
+    def rebalance(self, ticks_lower, ticks_higher):
         seed = self.value
-        self.get_price_ranges(lower_pct, upper_pct)
+        self.upper_range = self.calc_high_price(ticks_higher)
+        self.lower_range = self.calc_low_price(ticks_lower)
         self.add_liquidity(seed)
 
     def calc_apr_for_duration(self):
-        if self.impermanent_loss > 0:
+        if self.duration > 0 and self.impermanent_loss > 0:
             self.apr = (self.impermanent_loss / self.value) * (365 / self.duration) * 100
         else:
             self.apr = 0
 
-    def calc_liquidity(self):
+    def setup_existing_position(self, low_price, high_price):
         """
         Only use if balances, prices, and ranges are all available and set
         i.e. this should be used instead of the initialize_range method, but not both
         """
+        self.lower_range = low_price
+        self.upper_range = high_price
         liq_x = um.liquidity_x(self.token_x.balance, self.native_price, self.upper_range)
         liq_y = um.liquidity_y(self.token_y.balance, self.native_price, self.lower_range)
         self.liquidity = min(liq_x, liq_y)
@@ -150,6 +186,7 @@ class LiquidityPool:
         Doing this will slightly update the ranges given liquidity never coming out exact
         On a platfom like VFAT, you end up refunded a small amount of the compounded fees to make it round out
         """
+        # TODO: Figure out how to keep the ranges exact after compounding, will need to return dust
         seed = self.value + fees
         self.add_liquidity(seed)
         self.calc_apr_for_duration()
@@ -159,6 +196,7 @@ class LiquidityPool:
             f"{self.token_x.symbol}: {self.token_x.balance:.6f} (${self.token_x.value:.2f})| {self.token_y.symbol}: {self.token_y.balance:.6f} (${self.token_y.value:.2f})\n" 
             f"LP Value: ${self.value:.2f}\n"
             f"Current Price: {self.native_price:.6f} in {self.token_y.symbol}/{self.token_x.symbol}\n"
+            f"Ticks (low, current, high) {self.lower_tick}, {self.current_tick}, {self.upper_tick}\n"
             f"Range: {self.lower_range:.6f} ~ {self.upper_range:.6f}\n"
             f"Hold Value: ${self.hold_value:.2f}\n"
             f"Impermanent Loss: ${self.impermanent_loss:.2f}\n"
