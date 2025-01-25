@@ -44,9 +44,10 @@ class LiquidityPool:
         self.initial_setup = True
         self.duration = 0
         self.fees_accrued = 0
+        self.total_fees = 0
         self.tick_spacing = tick_spacing
-        self.tick_pct = tick_spacing / 100
         self.dust = 0
+        self.gm_rebalance = True
     
     @property
     def value(self):
@@ -94,6 +95,13 @@ class LiquidityPool:
         return um.price_to_tick(self.native_price)
     
     @property
+    def current_liq_tick(self):
+        """
+        This is the tick that ranges will be based on.  It's hte starting point of the bin that the current price is in
+        """
+        return self.current_tick // self.tick_spacing * self.tick_spacing
+    
+    @property
     def current_liq_tick_price(self):
         """
         This is the price at the current liquidity tick
@@ -108,15 +116,17 @@ class LiquidityPool:
     def upper_range(self):
         return um.sqrtp_to_price(um.tick_to_sqrtp(self.upper_tick))
     
-    def calc_tick_to_price(self, tick):
-        """
-        low_tick: how many ticks below the current tick to start
-        """
-        return um.sqrtp_to_price(um.tick_to_sqrtp(self.current_tick - tick * self.tick_spacing))
+    @property
+    def in_range(self):
+        if self.lower_range <= self.native_price <= self.upper_range:
+            return True
+        else:
+            return False
         
     def setup_new_position(self, seed, ticks_lower, ticks_higher):
-        self.upper_tick = self.current_tick + ticks_higher * self.tick_spacing - 1
-        self.lower_tick = self.current_tick - ticks_lower * self.tick_spacing - 1
+        # Ticks are fixed based on the liquidity tick, not the current tick (could be in between)
+        self.upper_tick = self.current_liq_tick + ticks_higher * self.tick_spacing - 1
+        self.lower_tick = self.current_liq_tick - ticks_lower * self.tick_spacing - 1
         self.add_liquidity(seed)
         # Make note of the initial token values to look at impermanent loss
         if self.initial_setup:
@@ -137,6 +147,7 @@ class LiquidityPool:
         liq_y = um.liquidity_y(token_y_bal, self.native_price, self.lower_range)
         self.liquidity = min(liq_x, liq_y)
         self.update_token_balances(0)  # need to align with ticks, not always even
+        self.dust += seed - self.value  # add to dust
         
     def update_token_balances(self, duration):
         self.duration += duration  # add duration days
@@ -152,9 +163,15 @@ class LiquidityPool:
         self.calc_apr_for_duration()
 
     def rebalance(self, ticks_lower, ticks_higher):
-        seed = self.value
-        self.upper_range = self.calc_high_price(ticks_higher)
-        self.lower_range = self.calc_low_price(ticks_lower)
+        if self.current_tick <= self.lower_tick and self.gm_rebalance:
+            # Use geometric mean rebalancing, don't "chase" downwards
+            self.lower_tick -= ticks_lower * self.tick_spacing - 1
+            self.upper_tick += ticks_higher * self.tick_spacing - 1
+        else:
+            self.upper_tick = self.current_liq_tick + ticks_higher * self.tick_spacing - 1
+            self.lower_tick = self.current_liq_tick - ticks_lower * self.tick_spacing - 1
+        seed = self.value * 0.999  # VFAT charges 0.1% fees on the balance
+        self.fees_accrued = 0  # fees get compounded into the new balance
         self.add_liquidity(seed)
 
     def calc_apr_for_duration(self):
@@ -181,15 +198,16 @@ class LiquidityPool:
             self.init_y_bal = self.token_y.balance
             self.initial_setup = False
 
-    def coumpound_fees(self, fees):
-        """
-        Doing this will slightly update the ranges given liquidity never coming out exact
-        On a platfom like VFAT, you end up refunded a small amount of the compounded fees to make it round out
-        """
-        # TODO: Figure out how to keep the ranges exact after compounding, will need to return dust
-        seed = self.value + fees
+    def coumpound_fees_accured(self):
+        seed = self.value + self.fees_accrued
+        self.total_fees += self.fees_accrued
+        self.fees_accrued = 0 
         self.add_liquidity(seed)
         self.calc_apr_for_duration()
+
+    def withdraw_fees_accrued(self):
+        self.total_fees += self.fees_accrued
+        self.fees_accrued = 0
 
     def __repr__(self):
         return (
@@ -201,6 +219,8 @@ class LiquidityPool:
             f"Hold Value: ${self.hold_value:.2f}\n"
             f"Impermanent Loss: ${self.impermanent_loss:.2f}\n"
             f"Fee APR required to offset IL: {self.apr:.1f}%\n"
+            f"Fees Accrued: ${self.fees_accrued:.2f}\n"
+            f"Total Fees: ${self.total_fees:.2f}\n"
         )
 
 
