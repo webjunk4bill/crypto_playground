@@ -1,16 +1,17 @@
-import api
+import private
 import requests
 from web3 import Web3
 import json
 import pandas as pd
-import binascii
+import helper_classes as hc
 
 class Transactions:
     def __init__(self, wallet):
         self.wallet = wallet
+        self.wal_shortname = f"{wallet[2:6]}...{wallet[-4:]}"
         self.base_url = 'https://api.etherscan.io/v2/api'
-        self.api_key = api.etherscan_api
-        self.w3 = Web3(Web3.HTTPProvider(api.grove_base_url))
+        self.api_key = private.etherscan_api
+        self.w3 = Web3(Web3.HTTPProvider(private.grove_base_url))
         self.transaction_list = []
         self.filtered_list = None
         # Define Method IDs for filtering
@@ -24,6 +25,13 @@ class Transactions:
             'cbBTC': '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf',
             'AERO': '0x940181a94A35A4569E4529A3CDfB74e38FD98631'
         }
+        self.cgids = {
+            'cbBTC': 'bitcoin',
+            'WETH': 'ethereum',
+            'AERO': 'aerodrome-finance',
+            'USDC': 'usd-coin'
+        }
+        self.token_prices = {}
         self.logs = None
     # TODO: Make sure to have a save a load function from csv
 
@@ -86,36 +94,76 @@ class Transactions:
                 filtered_tx_list.append(tx)
                 continue
         self.filtered_list = filtered_tx_list
+        print(f"Received {len(filtered_tx_list)} transactions for sender: {sender}")
         return filtered_tx_list
     
     def create_dataframe(self):
         """Create a pandas DataFrame from the filtered transaction list."""
         df = pd.DataFrame(self.filtered_list)
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-        df['value'] = df['value'].astype(float)
-        df['gasPrice'] = df['gasPrice'].astype(float)
-        df['gasUsed'] = df['gasUsed'].astype(float)
-        df['gas'] = df['gasPrice'] * df['gasUsed']
-        df['blockNumber'] = df['blockNumber'].astype(int)
-        df['nonce'] = df['nonce'].astype(int)
-        df['gasPriceGwei'] = df['gasPrice'] / 10**9
-        df['gasUsedGwei'] = df['gasUsed'] / 10**9
-        df['gasGwei'] = df['gasGwei'] / 10**9
-        return df
+        col_to_keep = ['timeStamp', 'blockNumber', 'hash', 'value', 'tokenDecimal', 'tokenSymbol']
+        df = df[col_to_keep]
+        df['dateTime'] = pd.to_datetime(df['timeStamp'].astype(int), unit='s')
+        df['value'] = df['value'].astype(float) / 10 ** df['tokenDecimal'].astype(int)
+        df.rename(columns={"value": "amount"})
+        df = df.assign(Recorded=False)
+        df.sort_values(by='blockNumber', ascending=False, inplace=True)
+        df.set_index('dateTime', inplace=True)
+        self.df = df
+        print(f"First Block Stored: {df.loc[:,'blockNumber'].min()}\nLast Block Stored: {df.loc[:,'blockNumber'].max()}")
+
+    def get_usd_prices(self):
+        """
+        Get the USD prices for the tokens in the DataFrame.
+        Returns a dictionary of pandas Series of prices for each token.
+        """
+        df = self.df
+        token_symbols = df['tokenSymbol'].unique()
+        start = df.index.min()
+        end = df.index.max()
+        prices = {}
+        for symbol in token_symbols:
+            try:
+                cgid = self.cgids[symbol]
+            except:
+                print(f"Could not find cgid for {symbol}")
+            p, v = hc.get_historical_prices(cgid, start, end)
+            prices[symbol] = p
+        self.token_prices = prices
+        return prices
     
-    def get_tx_count(self):
-        """Return the number of transactions in the filtered list."""
-        return len(self.filtered_list)
-    
-    def get_total_value(self):
-        """Return the total value of transactions in the filtered list."""
-        return sum(self.filtered_list['value'])
-    
-    def get_total_gas(self):
-        """Return the total gas cost of transactions in the filtered list."""
-        return sum(self.filtered_list['gas'])
-    
-    def get_total_gas_used(self):
-        """Return the total gas used of transactions in the filtered list."""
-        return sum(self.filtered_list['gasUsed'])
+    def update_prices(self):
+        """
+        Update the prices in the DataFrame
+        Calculate/add the total USD value of the transaction
+        """
+        self.df['price'] = self.df.apply(lambda row: self.find_closest_price(row['tokenSymbol'], row.name), axis=1)
+        self.df['valueUsd'] = self.df['price'] * self.df['value']
+
+    def find_closest_price(self, token, timestamp):
+        """
+        Find the closest price for a given token and timestamp.
+        """
+        if token in self.token_prices:
+            series = self.token_prices[token]  # Retrieve the Pandas Series
+            
+            # Ensure the index is sorted (just in case)
+            series = series.sort_index()
+            
+            # Find the position where 'timestamp' would be inserted
+            pos = series.index.searchsorted(timestamp)
+
+            # Handle edge cases where timestamp is outside the range
+            if pos == 0:
+                closest_time = series.index[0]
+            elif pos >= len(series):
+                closest_time = series.index[-1]
+            else:
+                # Compare the closest previous and next times
+                prev_time = series.index[pos - 1]
+                next_time = series.index[pos]
+                closest_time = prev_time if abs(prev_time - timestamp) <= abs(next_time - timestamp) else next_time
+            
+            return series[closest_time]  # Return the price for the closest time
+
+        return None  # If token not found
 
