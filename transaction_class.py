@@ -4,11 +4,12 @@ from web3 import Web3
 import json
 import pandas as pd
 import helper_classes as hc
+import os
 
 class Transactions:
     def __init__(self, wallet):
         self.wallet = wallet
-        self.wal_shortname = f"{wallet[2:6]}...{wallet[-4:]}"
+        self.wal_shortname = f"{wallet[2:6].lower()}-{wallet[-4:].lower()}"
         self.base_url = 'https://api.etherscan.io/v2/api'
         self.api_key = private.etherscan_api
         self.w3 = Web3(Web3.HTTPProvider(private.grove_base_url))
@@ -33,9 +34,25 @@ class Transactions:
         }
         self.token_prices = {}
         self.logs = None
-    # TODO: Make sure to have a save a load function from csv
+        self.csv_path = f"outputs/{self.wal_shortname}_transactions.csv"
+        self.df_old = None
+        if os.path.exists(self.csv_path):
+            self.csv_exist = True
+            df_old = pd.read_csv(self.csv_path)
+            df_old.set_index('dateTime', inplace=True)
+            df_old.sort_values(by='blockNumber', ascending=False, inplace=True)
+            self.df_old = df_old
+        else:
+            self.csv_exist = False
 
     def get_transactions(self, start_block):
+        # Check if start_block exists in current csv file
+        if self.df_old is not None:
+            if self.df_old['blockNumber'].min() <= start_block <= self.df_old['blockNumber'].max():
+                # get highest block number in csv
+                print(f"Block {start_block} already exists in csv file.   ")
+                start_block = self.df_old['blockNumber'].max() + 1
+                print(f"Starting instead at block {start_block}")
         try:
             end_block = self.w3.eth.get_block_number()
         except Exception as e:
@@ -104,11 +121,17 @@ class Transactions:
         df = df[col_to_keep]
         df['dateTime'] = pd.to_datetime(df['timeStamp'].astype(int), unit='s')
         df['value'] = df['value'].astype(float) / 10 ** df['tokenDecimal'].astype(int)
-        df.rename(columns={"value": "amount"})
+        df['timeStamp'] = df['timeStamp'].astype('Int64')
+        df['blockNumber'] = df['blockNumber'].astype('Int64')
+        df = df.rename(columns={"value": "amount"})
         df = df.assign(Recorded=False)
         df.sort_values(by='blockNumber', ascending=False, inplace=True)
         df.set_index('dateTime', inplace=True)
         self.df = df
+        # Pull USD prices
+        self.get_usd_prices()
+        # Add the prices to the DataFrame
+        self.update_prices()
         print(f"First Block Stored: {df.loc[:,'blockNumber'].min()}\nLast Block Stored: {df.loc[:,'blockNumber'].max()}")
 
     def get_usd_prices(self):
@@ -137,7 +160,24 @@ class Transactions:
         Calculate/add the total USD value of the transaction
         """
         self.df['price'] = self.df.apply(lambda row: self.find_closest_price(row['tokenSymbol'], row.name), axis=1)
-        self.df['valueUsd'] = self.df['price'] * self.df['value']
+        self.df['valueUsd'] = self.df['price'] * self.df['amount']
+
+    def merge_dataframes(self):
+        if self.df_old is not None:
+            print("Merging Dataframes")
+            print(f"Historical Block range: {self.df_old.loc[:,'blockNumber'].min()} to {self.df_old.loc[:,'blockNumber'].max()}")
+            print(f"Current Block range: {self.df.loc[:,'blockNumber'].min()} to {self.df.loc[:,'blockNumber'].max()}")
+            df = pd.concat([self.df_old, self.df])
+            df.sort_values(by='blockNumber', ascending=False, inplace=True)
+            print(f"Merged Block range: {df.loc[:,'blockNumber'].min()} to {df.loc[:,'blockNumber'].max()}")
+            self.df = df
+
+    def mark_transactions_recorded(self):
+        """
+        Mark the transactions as recorded in the database. 
+        This records in the main dataframe (self.df), so it may or may not have the history merged depending on the sequence
+        """
+        self.df = self.df.assign(Recorded=True)
 
     def find_closest_price(self, token, timestamp):
         """
@@ -166,4 +206,10 @@ class Transactions:
             return series[closest_time]  # Return the price for the closest time
 
         return None  # If token not found
+    
+    def write_csv(self):
+        """
+        Write the DataFrame to a CSV file
+        """
+        self.df.to_csv(self.csv_path)
 
