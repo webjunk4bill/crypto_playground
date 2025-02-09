@@ -1,5 +1,7 @@
 # Module imports
 import numpy as np
+from pandas import DataFrame
+
 import helper_classes as hc
 from core import farm
 import pandas as pd
@@ -68,9 +70,16 @@ def predict():
 # df, latest_btc_price = predict()
 
 #real data
+
+#todo: write a cleaner version, maybe just aggregate data and organize it.
 latest_btc_price = 100000 # i.e. the price you start the position with.
-data_file = "data/2025-02-09_BTC-USD_7d_1m.csv"
-df = pd.read_csv(data_file)
+data_file_a = "data/2025-02-09_BTC-USD_14d_1m.csv"
+df1 = pd.read_csv(data_file_a)
+data_file_b = "data/2025-02-09_BTC-USD_7d_1m.csv"
+df2 = pd.read_csv(data_file_b)
+
+df = pd.concat([df1, df2])
+df.drop_duplicates(subset=["Date"], inplace=True, keep='first')
 
 
 
@@ -96,7 +105,7 @@ tvl_rewarded = 7E6  # This can change quite a bit and determines how "concentrat
 apr_per_tick = weekly_rewards / tvl_rewarded * 52 * 100
 seed = 10000
 fee_per_ut_per_tick = apr_per_tick / 100 / 365 / 24 / 60 * seed
-print(f"Fee per hour, per liquidity tick: ${fee_per_ut_per_tick:.2f}")
+print(f"Fee per UT, per liquidity tick: ${fee_per_ut_per_tick:.2f}")
 
 class RangeMode(Enum):
     EVEN = 'EVEN'
@@ -110,10 +119,6 @@ class RangeMode(Enum):
 export_data = []
 min_tolerance = 2
 max_tolerance = 7
-il_report = {"Mininmum IL": None,
-             "Minimum IL Range": None,
-             "Maximum IL": None,
-             "Maximum IL Range": None}
 
 for range_mode in [RangeMode.EVEN, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH]:
 
@@ -137,12 +142,11 @@ for range_mode in [RangeMode.EVEN, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH
         high_tick = int(high_pct * tick_spacing / 100)
         low_tick = int(low_pct * tick_spacing / 100)
         fee_per_ut = fee_per_ut_per_tick / (high_tick + low_tick + 1)
-        print(f"Fee per hour: ${fee_per_ut:.2f}")
+        print(f"Fee per UT: ${fee_per_ut:.2f}")
 
         il = None
         gains = None
         rebalance = True
-            # Set up LP
 
         btc = hc.Token("BTC", latest_btc_price)
         usdc = hc.Token("USDC", 1)
@@ -162,6 +166,9 @@ for range_mode in [RangeMode.EVEN, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH
         gains = btc_usdc.impermanent_gain
         loss = pd.Series(il)
         print(f'Gain from Simulation of Range +{high_pct}/-{low_pct} is {gains}')
+
+
+
 
 
 
