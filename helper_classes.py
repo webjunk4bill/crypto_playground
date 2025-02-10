@@ -81,7 +81,11 @@ class LiquidityPool:
         """
         Negative value means that holding the LP leads to "impermanent gains"
         """
-        return self.hold_value - self.value 
+        return self.hold_value - self.value
+
+    @property
+    def impermanent_gain(self):
+        return -1 * self.impermanent_loss
         
     @property
     def ratio(self):
