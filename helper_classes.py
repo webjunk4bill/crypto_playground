@@ -174,7 +174,7 @@ class LiquidityPool:
         else:
             self.upper_tick = self.current_liq_tick + ticks_higher * self.tick_spacing - 1
             self.lower_tick = self.current_liq_tick - ticks_lower * self.tick_spacing - 1
-        seed = self.value * 0.999  # VFAT charges 0.1% fees on the balance
+        seed = self.value * 0.9999  # VFAT charges 0.01% fees on the balance
         self.fees_accrued = 0  # fees get compounded into the new balance
         self.add_liquidity(seed)
 

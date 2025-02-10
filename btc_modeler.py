@@ -100,8 +100,8 @@ df.drop_duplicates(subset=["Date"], inplace=True, keep='first')
 
 # Minute calc
 tick_spacing = 100
-weekly_rewards = 394411
-tvl_rewarded = 7E6  # This can change quite a bit and determines how "concentrated" the pool is
+weekly_rewards = 440000
+tvl_rewarded = 2.1E6  # This can change quite a bit and determines how "concentrated" the pool is
 apr_per_tick = weekly_rewards / tvl_rewarded * 52 * 100
 seed = 10000
 fee_per_ut_per_tick = apr_per_tick / 100 / 365 / 24 / 60 * seed
@@ -118,7 +118,7 @@ class RangeMode(Enum):
 # Decide on ranges to use.
 export_data = []
 min_tolerance = 2
-max_tolerance = 7
+max_tolerance = 10
 
 for range_mode in [RangeMode.EVEN, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH]:
 
@@ -153,19 +153,24 @@ for range_mode in [RangeMode.EVEN, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH
         btc_usdc = hc.LiquidityPool(btc, usdc)
         btc_usdc.gm_rebalance = False
         btc_usdc.setup_new_position(seed, low_tick, high_tick)
+        rebal_ctr = 0
+        no_rebal_ctr = 0
         for price in df["Price"]:
             btc.price = price
-            btc_usdc.update_token_balances(1/24)
+            btc_usdc.update_token_balances(1/24/60)
             if btc_usdc.in_range:
-                btc_usdc.fees_accrued += fee_per_ut * 0.982  # VFAT charges 1.8% fee on AERO rewards
+                btc_usdc.fees_accrued += fee_per_ut * 0.991  # VFAT charges 0.9% fee on AERO rewards
+                no_rebal_ctr += 1 
             elif rebalance:
                 btc_usdc.rebalance(low_tick, high_tick)
+                rebal_ctr += 1
             else:
                 pass
         il = btc_usdc.impermanent_loss
         gains = btc_usdc.impermanent_gain
         loss = pd.Series(il)
         print(f'Gain from Simulation of Range +{high_pct}/-{low_pct} is {gains}')
+        print(f"In range: {no_rebal_ctr}, Rebalances: {rebal_ctr}")
 
 
 
