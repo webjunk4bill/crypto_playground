@@ -139,10 +139,15 @@ class SickleNFTtracker:
                 new_mint = df[(df["hash"] == tx_hash) & (df["eventType"] == "Mint")]
                 for _, mint in new_mint.iterrows():
                     self.series_map[mint["tokenID"]] = self.series_map[row["tokenID"]]
-
-        df.loc[:, "eventType"] = "Rebalance"
-
         df.loc[:, "seriesID"] = df["tokenID"].map(self.series_map)
+
+        # Now that Series IDs are mapped, update proper event Types
+        tx_hashes = df["hash"].unique()
+        event_type = {}
+        for tx_hash in tx_hashes:
+            event_type[tx_hash], _ = self.fetch_transaction_details(tx_hash)
+        # map the event types for each tx_hash in df
+        df.loc[:, "eventType"] = df["hash"].map(event_type)
         df.sort_values(by=["seriesID", "timeStamp"], inplace=True)
         self.nft_df = df
         return df
@@ -154,7 +159,7 @@ class SickleNFTtracker:
         df = pd.DataFrame(token_txns)
         df = df[["blockNumber", "timeStamp", "hash", "from", "to", "value", "tokenSymbol", "tokenDecimal"]]
         df["timeStamp"] = pd.to_datetime(pd.to_numeric(df["timeStamp"], errors='coerce'), unit='s')
-        df["value"] = df["value"].astype(float) / (10 ** df["tokenDecimal"].astype(int))  # Convert to standard token value
+        df["value"] = (df["value"].astype(float) / (10 ** df["tokenDecimal"].astype(int))).round(7)  # Convert to standard token value and round to 5 decimal digits
         df.rename(columns={'value': 'amount'}, inplace=True)  # Track as amount instead of value
         df.loc[df["from"].str.lower() == private.wal_lp.lower(), "amount"] *= -1  # Funds sent to contract/NFT are negative
 
@@ -211,7 +216,7 @@ class SickleNFTtracker:
         Calculate/add the total USD value of the transaction
         """
         self.df_main['price'] = self.df_main.apply(lambda row: self.find_closest_price(row['tokenSymbol'], row.name), axis=1)
-        self.df_main['valueUsd'] = self.df_main['price'] * self.df_main['amount']
+        self.df_main['valueUsd'] = (self.df_main['price'] * self.df_main['amount']).round(2)
 
     def find_closest_price(self, token, timestamp):
         """
@@ -261,11 +266,15 @@ class SickleNFTtracker:
             print(f"Historical Block range: {self.df_old.loc[:,'blockNumber'].min()} to {self.df_old.loc[:,'blockNumber'].max()}")
             print(f"Current Block range: {self.df_main.loc[:,'blockNumber'].min()} to {self.df_main.loc[:,'blockNumber'].max()}")
             df = pd.concat([self.df_old.copy(), self.df_main.copy()])
-            df = df.drop_duplicates(subset=["hash", "from", "to", "amount", "tokenSymbol", "tokenID"])
-            df["blockNumber"] = df["blockNumber"].astype(int)
-            print(f"Merged Block range: {df.loc[:,'blockNumber'].min()} to {df.loc[:,'blockNumber'].max()}")
+            df.loc[:, "blockNumber"] = df.loc[:, "blockNumber"].astype(int)
             df.sort_values(by=["seriesID", "blockNumber"], inplace=True)
+            df.drop_duplicates(inplace=True, keep="last")
+            # Any amount that is negative needs to have the eventType updated to Deposit
+            df.loc[df["amount"] < 0, "eventType"] = "Deposit"
+            print(f"Merged Block range: {df.loc[:,'blockNumber'].min()} to {df.loc[:,'blockNumber'].max()}")
             self.df_main = df
+        else:
+            self.df_main.loc[self.df_main["amount"] < 0, "eventType"] = "Deposit"
 
     def mark_transactions_recorded(self):
         self.df_main.loc[:,'recorded'] = True
