@@ -50,8 +50,11 @@ class SickleNFTtracker:
         for seriesID in df_old['seriesID'].unique():
             last_block_seen.append(df_old[df_old['seriesID'] == seriesID]['blockNumber'].iloc[-3])
             print(f"Last block seen for seriesID {seriesID} is {last_block_seen[-1]}")  
-        print(f"Data exisits, setting start block to {min(last_block_seen) - 1} in order to continue tracing NFT transfers")
-        self.start_block = min(last_block_seen) - 1
+        if self.end_block <  min(last_block_seen):
+            print(f"extracting older data, keeping block pull from {self.start_block} to {self.end_block}")
+        else:
+            print(f"Data exisits, setting start block to {min(last_block_seen) - 1} in order to continue tracing NFT transfers")
+            self.start_block = min(last_block_seen) - 1
         self.df_old = df_old
     
     def fetch_raw_transactions(self, address, action='tokentx'):
@@ -215,7 +218,7 @@ class SickleNFTtracker:
         Update the prices in the DataFrame
         Calculate/add the total USD value of the transaction
         """
-        self.df_main['price'] = self.df_main.apply(lambda row: self.find_closest_price(row['tokenSymbol'], row.name), axis=1)
+        self.df_main['price'] = (self.df_main.apply(lambda row: self.find_closest_price(row['tokenSymbol'], row.name), axis=1)).round(3)
         self.df_main['valueUsd'] = (self.df_main['price'] * self.df_main['amount']).round(2)
 
     def find_closest_price(self, token, timestamp):

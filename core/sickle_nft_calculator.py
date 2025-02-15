@@ -112,6 +112,9 @@ class SickleNFTcalculator:
             self.df["date"] = self.df["timeStamp"].dt.date
         if recorded == "new":
             piv_df = self.df[(self.df["transactionType"] == "fee") & (self.df["recorded"] == False)].pivot_table(index=["date", "tokenSymbol"], values=["amount", "valueUsd"], aggfunc='sum')
+            if piv_df.empty:
+                print("No new fees recorded")
+                return None
         else:
             piv_df = self.df[self.df["transactionType"] == "fee"].pivot_table(index=["date", "tokenSymbol"], values=["amount", "valueUsd"], aggfunc='sum')
         piv_df = piv_df.reset_index()
@@ -150,17 +153,17 @@ class SickleNFTcalculator:
             end_token_id = int(df.tokenID.iloc[-1])
             lp = SickleLPTracker(end_token_id)
             perf[name] = {
-                "$net_funding": net_funding, 
-                "$total_fees": total_fees, 
+                "$net_funding": net_funding.round(2), 
+                "$total_fees": total_fees.round(2), 
                 "hold_tokens": hold_token, 
-                "%average_fee_apr": apr, 
-                "$start_price": start_price, 
-                "$end_price": end_price,
-                "%token_gain": token_gain
+                "%average_fee_apr": apr.round(1), 
+                "$start_price": start_price.round(2), 
+                "$end_price": end_price.round(2),
+                "%token_gain": token_gain.round(2)
                 }
             perf[name] = {**perf[name], **lp.balances}
-            perf[name]["Gain over full token hold"] = (lp.value + total_fees) - hold_token * lp.volatile_price
-            perf[name]["Gain over hold USD"] = lp.value + total_fees - net_funding
+            perf[name]["Gain over full token hold"] = ((lp.value + total_fees) - hold_token * lp.volatile_price).round(2)
+            perf[name]["Gain over hold USD"] = (lp.value + total_fees - net_funding).round(2)
         self.lp_analysis = pd.DataFrame(perf)
         print(self.lp_analysis)
         self.lp_analysis.to_csv(f"outputs/{self.wal_shortname}_returns.csv")
