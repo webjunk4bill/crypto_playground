@@ -5,8 +5,9 @@ import os
 import helper_classes as hc
 
 class SickleNFTtracker:
-    def __init__(self, start_block, wallet_addr=private.wal_lp, sickle_contract=private.sickle_lp):
+    def __init__(self, start_block, end_block=99999999, wallet_addr=private.wal_lp, sickle_contract=private.sickle_lp):
         self.start_block = start_block
+        self.end_block = end_block
         self.wallet = wallet_addr.lower()
         self.wal_shortname = f"{self.wallet[2:6].lower()}-{self.wallet[-4:].lower()}"
         self.sickle = sickle_contract.lower()
@@ -30,6 +31,7 @@ class SickleNFTtracker:
             'AERO': 'aerodrome-finance',
             'USDC': 'usd-coin'
         }
+        # topic id is needed to understand methods related to compound, harvest, etc.
         self.topic_id = "0xbf9d03ac543e8f596c6f4af5ab5e75f366a57d2d6c28d2ff9c024bd3f88e8771"
         self.csv_path = f"outputs/{self.wal_shortname}_tracker.csv"
         self.df_main = None
@@ -37,16 +39,17 @@ class SickleNFTtracker:
         self.token_prices = None
         if os.path.exists(self.csv_path):
             self.read_stored_data()
+        self.series_map = {}
 
     def read_stored_data(self):
         df_old = pd.read_csv(self.csv_path, parse_dates=["timeStamp"])
         df_old.set_index('timeStamp', inplace=True)
-        df_old.sort_values(by='blockNumber', ascending=False, inplace=True)
+        df_old.sort_values(by='blockNumber', ascending=True, inplace=True)
         # Find the last block seen for each seriesID in the dataframe
         last_block_seen = []
         for seriesID in df_old['seriesID'].unique():
-            last_block_seen.append(df_old[df_old['seriesID'] == seriesID]['blockNumber'].max())
-            print(f"Last block seen for seriesID {seriesID} is {last_block_seen[-1]}")
+            last_block_seen.append(df_old[df_old['seriesID'] == seriesID]['blockNumber'].iloc[-3])
+            print(f"Last block seen for seriesID {seriesID} is {last_block_seen[-1]}")  
         print(f"Data exisits, setting start block to {min(last_block_seen) - 1} in order to continue tracing NFT transfers")
         self.start_block = min(last_block_seen) - 1
         self.df_old = df_old
@@ -65,7 +68,7 @@ class SickleNFTtracker:
             'page': '1',
             'offset': '10000',
             'startblock': self.start_block,
-            'endblock': 99999999,
+            'endblock': self.end_block,
             'sort': 'asc',
             'apikey': self.api_key
         }
@@ -106,15 +109,14 @@ class SickleNFTtracker:
         # Identify burns (to burn address) and mints (from address is zero address)
         burn_address = "0x0000000000000000000000000000000000000000"
         df = df[df["from"].eq(burn_address) | df["to"].eq(burn_address)]  # only care about mint and burn, not transfers to the Aerodrome farms
-        df["eventType"] = df["from"].apply(lambda x: "Mint" if x == burn_address else "Burn")
+        df.loc[df["from"] == burn_address, "eventType"] = "Mint"
+        df.loc[df["to"] == burn_address, "eventType"] = "Burn"
         
         # Identify NFT series
-        df["seriesID"] = pd.NA  # Initialize so that can just fill na values
-        # TODO: Need to go back far enough to have the last transaction for a given Series ID
-        series_map = {} 
+        df.loc[:, "seriesID"] = pd.NA  # Initialize so that can just fill na values
         # Add previous mapping values if they exist:
         if self.df_old is not None:
-            series_map.update(self.df_old.set_index("tokenID")["seriesID"].to_dict())
+            self.series_map.update(self.df_old.set_index("tokenID")["seriesID"].to_dict())
         # Create new mapping for fresh deposits
         df_token = pd.DataFrame(token_txns)
         for _, row in df_token.iterrows():
@@ -127,29 +129,20 @@ class SickleNFTtracker:
                 series_id = '/'.join(map(str, tokens[:2])) + '_' + tx_hash[-4:]
                 matching_nft_mints = df[(df["hash"] == tx_hash) & (df["eventType"] == "Mint")]
                 for _, mint in matching_nft_mints.iterrows():
-                    series_map[mint["tokenID"]] = series_id
+                    self.series_map[mint["tokenID"]] = series_id
             
         # Assign series ID to subsequent burns and mints
-        df["seriesID"] = df["seriesID"].fillna(df["tokenID"].map(series_map))
+        df.loc[df["seriesID"].isna(), "seriesID"] = df.loc[df["seriesID"].isna(), "tokenID"].map(self.series_map)
         for _, row in df.iterrows():
-            if row["eventType"] == "Burn" and row["tokenID"] in series_map:
+            if row["eventType"] == "Burn" and row["tokenID"] in self.series_map:
                 tx_hash = row["hash"]
                 new_mint = df[(df["hash"] == tx_hash) & (df["eventType"] == "Mint")]
                 for _, mint in new_mint.iterrows():
-                    series_map[mint["tokenID"]] = series_map[row["tokenID"]]
+                    self.series_map[mint["tokenID"]] = self.series_map[row["tokenID"]]
 
-        # Get unique list of all the transaction hash values
-        # tx_hashes = df["hash"].unique()
-        # Fetch the event type for each hash
-        # For ease of tracking, all the NFT transfers are going to be "Rebalance, so don't need to query blockchain"
-        # event_types = {}
-        # for hash in tx_hashes:
-        #     event_types[hash], id = self.fetch_transaction_details(hash)
-        # Apply the event type to the data frame by matching the hash value
-        # df["eventType"] = df["hash"].map(event_types)
-        df["eventType"] = "Rebalance"
+        df.loc[:, "eventType"] = "Rebalance"
 
-        df["seriesID"] = df["tokenID"].map(series_map)
+        df.loc[:, "seriesID"] = df["tokenID"].map(self.series_map)
         df.sort_values(by=["seriesID", "timeStamp"], inplace=True)
         self.nft_df = df
         return df
@@ -164,7 +157,7 @@ class SickleNFTtracker:
         df["value"] = df["value"].astype(float) / (10 ** df["tokenDecimal"].astype(int))  # Convert to standard token value
         df.rename(columns={'value': 'amount'}, inplace=True)  # Track as amount instead of value
         df.loc[df["from"].str.lower() == private.wal_lp.lower(), "amount"] *= -1  # Funds sent to contract/NFT are negative
-        
+
         # Filter only transactions where both 'from' and 'to' are in FILTER_ADDRESSES
         df = df[df["from"].isin(self.addr_filters) & df["to"].isin(self.addr_filters)]
         # Link token transfers to NFT burn and mint transactions
@@ -179,16 +172,15 @@ class SickleNFTtracker:
         token_ids = {}
         for hash in tx_hashes:
             event_types[hash], token_ids[hash] = self.fetch_transaction_details(hash)
-            
+
         # Apply the event type and token ids to the data frame by matching the hash value
-        df["eventType"] = df.apply(lambda row: event_types.get(row["hash"], row["eventType"]), axis=1)
-        df["tokenID"] = df.apply(lambda row: token_ids.get(row["hash"], row["tokenID"]), axis=1)
+        df.loc[df["hash"].isin(event_types.keys()), "eventType"] = df["hash"].map(event_types)
+        df.loc[df["hash"].isin(token_ids.keys()), "tokenID"] = df["hash"].map(token_ids)
         df["tokenID"] = df["tokenID"].astype(int)
 
         # Fill missing seriesID using tokenID mapping
-        token_to_series = df.dropna(subset=["seriesID"]).set_index("tokenID")["seriesID"].to_dict()
-        df["seriesID"] = df["seriesID"].fillna(df["tokenID"].map(token_to_series))
-        
+        df.loc[df["seriesID"].isna(), "seriesID"] = df["tokenID"].map(self.series_map)
+
         df.sort_values(by=["seriesID", "timeStamp"], inplace=True)
         self.df_token = df
         return df
@@ -274,6 +266,9 @@ class SickleNFTtracker:
             print(f"Merged Block range: {df.loc[:,'blockNumber'].min()} to {df.loc[:,'blockNumber'].max()}")
             df.sort_values(by=["seriesID", "blockNumber"], inplace=True)
             self.df_main = df
+
+    def mark_transactions_recorded(self):
+        self.df_main.loc[:,'recorded'] = True
     
     def read_and_process_transactions(self):
         """
@@ -302,6 +297,8 @@ class SickleNFTtracker:
         # Get usd price data
         self.get_usd_prices()
         self.update_transaction_type()
+        # Mark new transactions as NOT recorded
+        self.df_main = self.df_main.assign(recorded=False)  # New transactions are not recorded
         self.merge_dataframes()
         return self.df_main.copy()
     

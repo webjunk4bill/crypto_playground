@@ -1,0 +1,227 @@
+import pandas as pd
+from web3 import Web3
+import json
+import private
+import unimath as um
+
+# Key Constants
+LP_FACTORY_CONTRACT = '0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A'
+SICKLE_NFT_CONTRACT = '0x827922686190790b37229fd06084350E74485b72'
+
+def read_sickle_contract_position(token_id):
+    web3 = Web3(Web3.HTTPProvider(private.grove_base_url))
+    # Start with Sickle NFT contract
+    with open('sickle_nft_abi.json', 'r') as nft_abi:
+        sickle_nft_abi = json.load(nft_abi)
+    sickle_contract = web3.eth.contract(address=SICKLE_NFT_CONTRACT, abi=sickle_nft_abi)
+    try:
+        print(f"Reading NFT position for NFT ID {token_id}")
+        info = sickle_contract.functions.positions(token_id).call()
+    except Exception as e:
+        print(f"{e}\nNFT ID {token_id} does not exist anymore.")
+    decoded = {
+        'nonce': info[0],
+        'operator': info[1],
+        'token0': info[2],
+        'token1': info[3],
+        'tickSpacing': info[4],
+        'tickLower': info[5],
+        'tickUpper': info[6],
+        'liquidity': info[7],
+        'feeGrowthInside0': info[8],
+        'feeGrowthInside1': info[9],
+        'tokensOwed0': info[10],
+        'tokensOwed1': info[11],
+        }
+    # get token name and decimal usage
+    print(f"Reading token information for token address {decoded['token0']}")
+    decoded['token0Name'], decoded['token0Decimal'] = get_token_information(web3, decoded['token0'])
+    print(f"Reading token information for token address {decoded['token1']}")
+    decoded['token1Name'], decoded['token1Decimal'] = get_token_information(web3, decoded['token1'])
+    # Get the pool address
+    print(f"Reading pool information for token addresses {decoded['token0']} and {decoded['token1']}")
+    decoded['poolAddress'] = get_pool_contract(web3, decoded['token0'], decoded['token1'], decoded['tickSpacing'])
+    # get the tick value
+    print(f"Reading current tick value for pool address {decoded['poolAddress']}")
+    decoded["tickCurrent"] = get_current_tick(web3, decoded['poolAddress'])
+    return decoded
+
+def get_token_information(web3, token_addr):
+    with open('token_abi.json', 'r') as token_abi:
+        token_abi = json.load(token_abi)
+    token0_contract = web3.eth.contract(address=token_addr, abi=token_abi)
+    try:
+        decimal = token0_contract.functions.decimals().call()
+    except Exception as e:
+        print(f"Error: Could not get decimal value for token {token_addr} due to {e}")
+    try:
+        name = token0_contract.functions.symbol().call()
+    except Exception  as e:
+        print(f"Error: Could not get name value for token {token_addr} due to {e}")
+    return name, decimal
+
+def get_pool_contract(web3, token0, token1, tick_spacing):
+    with open('lp_factory_abi.json', 'r') as abi:
+        abi = json.load(abi)
+    contract = web3.eth.contract(address=LP_FACTORY_CONTRACT, abi=abi)
+    try:
+        pool_addr = contract.functions.getPool(token0, token1, tick_spacing).call()
+    except Exception as e:
+        print(f"Error: Could not get pool address for token pair {token0}/{token1} due to {e}")
+    return pool_addr
+
+def get_current_tick(web3, address):
+    with open('sickle_pool_abi.json', 'r') as abi:
+        abi = json.load(abi)
+    contract = web3.eth.contract(address=address, abi=abi)
+    try:
+        slot0 = contract.functions.slot0().call()
+    except Exception as e:
+        print(f"Error: Could not get current tick value for pool {address} due to {e}")
+    return slot0[1]
+
+
+class SickleNFTcalculator:
+    """
+    Class to read in the csv output from the tracker class and perform various
+    and maipulations of the data
+    """
+    def __init__(self, wallet_addr):
+        self.wallet = wallet_addr.lower()
+        self.wal_shortname = f"{self.wallet[2:6].lower()}-{self.wallet[-4:].lower()}"
+        csv_path = f"outputs/{self.wal_shortname}_tracker.csv"
+        self.df = pd.read_csv(csv_path, parse_dates=["timeStamp"])
+        self.df_per_nft = self.get_each_nft_seriesID()
+        
+    def get_each_nft_seriesID(self):
+        """
+        Returns a dictionary of each NFT and the seriesID
+        """
+        # create mulitple dataframes, one for each NFT (seriesID)
+        seriesID_dict = {}
+        for seriesID in self.df.seriesID.unique():
+            seriesID_df = self.df[self.df.seriesID == seriesID]
+            seriesID_dict[seriesID] = seriesID_df
+        return seriesID_dict
+    
+    def get_daily_fees(self, recorded="all"):
+        """
+        Retrieve a dataframe of the daily fees
+        """
+        if "date" not in self.df.columns:
+            self.df["date"] = self.df["timeStamp"].dt.date
+        if recorded == "new":
+            piv_df = self.df[(self.df["transactionType"] == "fee") & (self.df["recorded"] == False)].pivot_table(index=["date", "tokenSymbol"], values=["amount", "valueUsd"], aggfunc='sum')
+        else:
+            piv_df = self.df[self.df["transactionType"] == "fee"].pivot_table(index=["date", "tokenSymbol"], values=["amount", "valueUsd"], aggfunc='sum')
+        piv_df = piv_df.reset_index()
+        piv_df["date"] = pd.to_datetime(piv_df["date"])
+        piv_df = piv_df.sort_values(by=["date"])
+        total_fees = piv_df["valueUsd"].sum()
+        if recorded == "new":
+            print(f"Total Fees collected since last update: ${total_fees:.2f}")
+        else:
+            print(f"Total Fees collected to date: ${total_fees:.2f}")
+        print(piv_df)
+        return piv_df, total_fees
+    
+    def analyze_lp_performance(self):
+        """
+        Analyze the performance of the LP
+        """
+        perf = {}
+        for name, df in self.df_per_nft.items():
+            df = df.sort_values(by=["timeStamp"], ascending=True)
+            net_funding = df[df.transactionType == "fund"]["valueUsd"].sum() + df[df.transactionType == "dust"]["valueUsd"].sum()
+            net_funding = abs(net_funding)
+            total_fees = df[df.transactionType == "fee"]["valueUsd"].sum()
+            # Get Hold Value and tokens
+            tokens = df[df.eventType == "Deposit"]["tokenSymbol"].unique()
+            for token in tokens:
+                if token == "USDC":
+                    continue
+                else:
+                    start_price = df[(df.eventType == "Deposit") & (df.tokenSymbol == token)].price.mean()
+                    end_price = df[df.tokenSymbol == token].price.iloc[-1]
+            hold_token = net_funding / start_price
+            apr = total_fees / net_funding * 365 * 100 / (df.timeStamp.max() - df.timeStamp.min()).days
+            token_gain = (end_price / start_price - 1) * 100
+            # Need to get the last tokenID, sorted by timeStamp
+            end_token_id = int(df.tokenID.iloc[-1])
+            lp = SickleLPTracker(end_token_id)
+            perf[name] = {
+                "$net_funding": net_funding, 
+                "$total_fees": total_fees, 
+                "hold_tokens": hold_token, 
+                "%average_fee_apr": apr, 
+                "$start_price": start_price, 
+                "$end_price": end_price,
+                "%token_gain": token_gain
+                }
+            perf[name] = {**perf[name], **lp.balances}
+            perf[name]["Gain over full token hold"] = (lp.value + total_fees) - hold_token * lp.volatile_price
+            perf[name]["Gain over hold USD"] = lp.value + total_fees - net_funding
+        self.lp_analysis = pd.DataFrame(perf)
+        print(self.lp_analysis)
+        self.lp_analysis.to_csv(f"outputs/{self.wal_shortname}_returns.csv")
+        return
+
+
+class SickleLPTracker:
+    """
+    Simple tracker to hold the Sickle LP Information
+    """
+    def __init__(self, token_id):
+        self.id = token_id
+        info = read_sickle_contract_position(self.id)
+        self.pool = info["poolAddress"]
+        self.liquidity = info["liquidity"]
+        self.lower_tick = info["tickLower"]
+        self.upper_tick = info["tickUpper"]
+        self.token0_name = info["token0Name"]
+        self.token0_dec = info["token0Decimal"]
+        self.token0_price = None
+        self.token1_name = info["token1Name"]
+        self.token1_dec = info["token1Decimal"]
+        self.token1_price = None
+        self.current_tick = info["tickCurrent"]
+        self.value = None
+        self.volatile_price = None
+        self.balances = self.calc_balances()
+
+    def calc_balances(self):
+        if self.token0_dec is None:
+            raise ValueError("Token0 decimal is not set.")
+        if self.token1_dec is None:
+            raise ValueError("Token1 decimal is not set.")
+        sq_low = um.tick_to_sqrtp(self.lower_tick)
+        sq_up = um.tick_to_sqrtp(self.upper_tick)
+        sq_cur = um.tick_to_sqrtp(self.current_tick)
+        liq = self.liquidity
+        token0_bal = um.calc_amount0(liq, sq_cur, sq_up) / (10 ** self.token0_dec)
+        token1_bal = um.calc_amount1(liq, sq_cur, sq_low) / (10 ** self.token1_dec)
+        token_dec_ratio = (10 ** self.token0_dec) / (10 ** self.token1_dec)
+        lp_price = um.sqrtp_to_price(sq_cur) * token_dec_ratio
+        if self.token0_name == 'USDC':
+            self.token0_price = 1
+            self.token1_price = 1 / lp_price
+            self.volatile_price = self.token1_price
+            self.value = token0_bal * self.token0_price + token1_bal * self.token1_price
+        elif self.token1_name == 'USDC':
+            self.token0_price = lp_price
+            self.token1_price = 1
+            self.volatile_price = self.token0_price
+            self.value = token0_bal * self.token0_price + token1_bal * self.token1_price
+        else:
+            print("Neither token is USDC, can't calculate USD value.")
+            self.value = 0
+        balances = {
+            "token0_name": self.token0_name,
+            "token0_balance": token0_bal,
+            "token0_price": self.token0_price,
+            "token1_name": self.token1_name,
+            "token1_balance": token1_bal,
+            "token1_price": self.token1_price,
+            "LP Value": self.value
+        }
+        return balances
