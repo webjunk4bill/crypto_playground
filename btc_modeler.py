@@ -2,7 +2,7 @@
 import numpy as np
 from pandas import DataFrame
 
-import helper_classes as hc
+import core.helper_classes as hc
 from core import farm
 import pandas as pd
 from datetime import datetime as dt

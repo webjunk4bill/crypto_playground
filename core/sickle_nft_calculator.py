@@ -11,7 +11,7 @@ SICKLE_NFT_CONTRACT = '0x827922686190790b37229fd06084350E74485b72'
 def read_sickle_contract_position(token_id):
     web3 = Web3(Web3.HTTPProvider(private.grove_base_url))
     # Start with Sickle NFT contract
-    with open('sickle_nft_abi.json', 'r') as nft_abi:
+    with open('abis/sickle_nft_abi.json', 'r') as nft_abi:
         sickle_nft_abi = json.load(nft_abi)
     sickle_contract = web3.eth.contract(address=SICKLE_NFT_CONTRACT, abi=sickle_nft_abi)
     try:
@@ -47,7 +47,7 @@ def read_sickle_contract_position(token_id):
     return decoded
 
 def get_token_information(web3, token_addr):
-    with open('token_abi.json', 'r') as token_abi:
+    with open('abis/token_abi.json', 'r') as token_abi:
         token_abi = json.load(token_abi)
     token0_contract = web3.eth.contract(address=token_addr, abi=token_abi)
     try:
@@ -61,7 +61,7 @@ def get_token_information(web3, token_addr):
     return name, decimal
 
 def get_pool_contract(web3, token0, token1, tick_spacing):
-    with open('lp_factory_abi.json', 'r') as abi:
+    with open('abis/lp_factory_abi.json', 'r') as abi:
         abi = json.load(abi)
     contract = web3.eth.contract(address=LP_FACTORY_CONTRACT, abi=abi)
     try:
@@ -71,7 +71,7 @@ def get_pool_contract(web3, token0, token1, tick_spacing):
     return pool_addr
 
 def get_current_tick(web3, address):
-    with open('sickle_pool_abi.json', 'r') as abi:
+    with open('abis/sickle_pool_abi.json', 'r') as abi:
         abi = json.load(abi)
     contract = web3.eth.contract(address=address, abi=abi)
     try:

@@ -2,7 +2,7 @@ import private
 import requests
 import pandas as pd
 import os
-import helper_classes as hc
+import core.helper_classes as hc
 
 class SickleNFTtracker:
     def __init__(self, start_block, end_block=99999999, wallet_addr=private.wal_lp, sickle_contract=private.sickle_lp):
