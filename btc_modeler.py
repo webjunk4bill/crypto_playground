@@ -167,22 +167,30 @@ for range_mode in [RangeMode.EVEN, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH
         btc_usdc.setup_new_position(seed, low_tick, high_tick)
         rebal_ctr = 0
         no_rebal_ctr = 0
+        time_to_rebal_ctr = 0
+        time_out_of_range = 0
         for price in df["Price"]:
             btc.price = price
             btc_usdc.update_token_balances(1/24/60)
             if btc_usdc.in_range:
                 btc_usdc.fees_accrued += fee_per_ut * 0.991  # VFAT charges 0.9% fee on AERO rewards
                 no_rebal_ctr += 1 
+                time_to_rebal_ctr = 0
             elif rebalance:
-                btc_usdc.rebalance(low_tick, high_tick)
-                rebal_ctr += 1
+                if time_to_rebal_ctr >= 10:
+                    btc_usdc.rebalance(low_tick, high_tick)
+                    rebal_ctr += 1
+                    time_out_of_range += 1
+                else:
+                    time_to_rebal_ctr += 1
+                    time_out_of_range += 1
             else:
                 pass
         il = btc_usdc.impermanent_loss
         gains = btc_usdc.impermanent_gain
         loss = pd.Series(il)
         print(f'Gain from Simulation of Range +{high_pct}/-{low_pct} is {gains}')
-        print(f"In range: {no_rebal_ctr}, Rebalances: {rebal_ctr}")
+        print(f"In range: {no_rebal_ctr}, Rebalances: {rebal_ctr}, Out of Range: {time_out_of_range}")
 
 
 
