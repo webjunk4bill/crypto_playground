@@ -69,11 +69,13 @@ class LiquidityPool:
         Need to deal with USDC being one of the tokens vs something like BTC/ETH LP
         """
         if self.seed:
+            seed = self.seed - self.dust  # Just assume dust wasn't there in the beginning to give a fair comparison
             if int(self.token_x.price) == 1:
-                return (self.seed / self.init_y_price) * self.token_y.price
+                return (seed / self.init_y_price) * self.token_y.price
             elif int(self.token_y.price) == 1:
-                return (self.seed / self.init_x_price) * self.token_x.price
+                return (seed / self.init_x_price) * self.token_x.price
             else:
+                # TODO: the dust calculations will not be correct for non stable-based pairs.  Need to think about this.
                 return self.init_x_bal * self.token_x.price + self.init_y_bal * self.token_y.price
             
     @property
@@ -89,7 +91,7 @@ class LiquidityPool:
         
     @property
     def ratio(self):
-        return (self.current_tick - self.lower_tick + 1) / (self.upper_tick - self.lower_tick + 1)
+        return (self.current_tick - self.lower_tick) / (self.upper_tick - self.lower_tick)
     
     @property
     def current_tick(self):
@@ -129,13 +131,12 @@ class LiquidityPool:
         
     def setup_new_position(self, seed, ticks_lower, ticks_higher):
         # Ticks are fixed based on the liquidity tick, not the current tick (could be in between)
-        self.upper_tick = self.current_liq_tick + ticks_higher * self.tick_spacing - 1
-        self.lower_tick = self.current_liq_tick - ticks_lower * self.tick_spacing - 1
+        self.upper_tick = self.current_liq_tick + ticks_higher * self.tick_spacing
+        self.lower_tick = self.current_liq_tick - ticks_lower * self.tick_spacing
         self.add_liquidity(seed)
         # Make note of the initial token values to look at impermanent loss
         if self.initial_setup:
             self.seed = self.value
-            self.dust = seed - self.seed
             self.init_x_price = self.token_x.price
             self.init_y_price = self.token_y.price
             self.init_x_bal = self.token_x.balance
@@ -143,7 +144,7 @@ class LiquidityPool:
             self.initial_setup = False
 
     def add_liquidity(self, seed):
-        # As price moves to the upper range (and therefore the "radio"), the amount of x is decreasing and the amount of y is increasing
+        # As price moves to the upper range (and therefore the "ratio"), the amount of x is decreasing and the amount of y is increasing
         token_x_bal = seed * (1 - self.ratio) / self.token_x.price
         token_y_bal = seed * self.ratio / self.token_y.price
         # Calculate liquidity
@@ -151,7 +152,8 @@ class LiquidityPool:
         liq_y = um.liquidity_y(token_y_bal, self.native_price, self.lower_range)
         self.liquidity = min(liq_x, liq_y)
         self.update_token_balances(0)  # need to align with ticks, not always even
-        self.dust += seed - self.value  # add to dust
+        if not self.initial_setup:
+            self.dust += seed - self.value  # add to dust
         
     def update_token_balances(self, duration):
         self.duration += duration  # add duration days
@@ -174,7 +176,7 @@ class LiquidityPool:
         else:
             self.upper_tick = self.current_liq_tick + ticks_higher * self.tick_spacing - 1
             self.lower_tick = self.current_liq_tick - ticks_lower * self.tick_spacing - 1
-        seed = self.value * 0.9999  # VFAT charges 0.1% fees on the balance
+        seed = self.value * 0.9999  # VFAT charges 0.01% fees on the balance
         self.fees_accrued = 0  # fees get compounded into the new balance
         self.add_liquidity(seed)
 
@@ -225,6 +227,7 @@ class LiquidityPool:
             f"Fee APR required to offset IL: {self.apr:.1f}%\n"
             f"Fees Accrued: ${self.fees_accrued:.2f}\n"
             f"Total Fees: ${self.total_fees:.2f}\n"
+            f"Dust returned: ${self.dust:.2f}\n"
         )
 
 
@@ -247,8 +250,9 @@ def get_historical_prices(token_id, start_date: pd.Timestamp, end_date: pd.Times
     while check:
         if increment > 10:
             raise Exception("Tried 10 times with no valid response, aborting")
-        print(f"Try #{increment}")
+        # print(f"Try #{increment}")
         try:
+            time.sleep(1)
             response = requests.get(url, params=params)
             data = response.json()
             prices = pd.DataFrame(data['prices'], columns=['timestamp', 'price'])

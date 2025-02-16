@@ -1,5 +1,5 @@
 # Module imports
-import helper_classes as hc
+import core.helper_classes as hc
 from core import farm
 from aenum import Enum
 import pandas as pd
