@@ -78,8 +78,15 @@ df1 = pd.read_csv(data_file_a)
 data_file_b = "data/2025-02-09_BTC-USD_7d_1m.csv"
 df2 = pd.read_csv(data_file_b)
 
-df = pd.concat([df1, df2])
+df = pd.concat([df1, df2], ignore_index=True)
 df.drop_duplicates(subset=["Date"], inplace=True, keep='first')
+df.loc[:, "Price"].plot()
+plt.title('Bitcoin Price Over Time')
+plt.xlabel('Time (seconds)')
+plt.ylabel('Price (USD)')
+plt.show()
+latest_btc_price = df.loc[:,  "Price"].iloc[0]
+print(latest_btc_price)
 
 
 
@@ -118,7 +125,7 @@ class RangeMode(Enum):
 # Decide on ranges to use.
 export_data = []
 min_tolerance = 2
-max_tolerance = 10
+max_tolerance = 15
 
 for range_mode in [RangeMode.EVEN, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH]:
 
