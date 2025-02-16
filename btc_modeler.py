@@ -78,12 +78,13 @@ df1 = pd.read_csv(data_file_a)
 data_file_b = "data/2025-02-10_BTC-USD_21d_1m.csv"
 df2 = pd.read_csv(data_file_b)
 data_file_c = "data/2025-02-10_BTC-USD_14d_1m.csv"
-df3 = pd.read_csv(data_file_b)
+df3 = pd.read_csv(data_file_c)
 data_file_d = "data/2025-02-10_BTC-USD_7d_1m.csv"
-df4 = pd.read_csv(data_file_b)
+df4 = pd.read_csv(data_file_d)
 
-df = pd.concat([df1, df2, df3, df4], ignore_index=True)
-df.drop_duplicates(subset=["Date"], inplace=True, keep='first')
+# df = pd.concat([df1, df2, df3, df4], ignore_index=True)
+df = pd.concat([df3, df4], ignore_index=True)
+# df.drop_duplicates(subset=["Date"], inplace=True, keep='first')
 df.loc[:, "Price"].plot()
 plt.title('Bitcoin Price Over Time')
 plt.xlabel('Time (seconds)')
