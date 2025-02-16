@@ -19,22 +19,27 @@ def load():
     # valid periods: 1d,5d,1mo,3mo,6mo,1y,2y,5y,10y,ytd,max
     # fetch data by interval (including intraday if period < 60 days)
             # valid intervals: 1m,2m,5m,15m,30m,60m,90m,1h,1d,5d,1wk,1mo,3mo
-    period = '7d'
+    period = '28d'
     interval = '1m'
     prepost = True
     today = datetime.date.today()
     today_date_str = today.strftime("%Y-%m-%d")
     #  NOTE: 7 days is the max allowed
-    days = datetime.timedelta(7)
-    start_date = today - days
+    start_days = datetime.timedelta(28)
+    start_date = today - start_days
     start_date_str = datetime.datetime.strftime(start_date, "%Y-%m-%d")
+
+    end_days = datetime.timedelta(21)
+    end_date = today - end_days
+    end_date_str = datetime.datetime.strftime(end_date, "%Y-%m-%d")
+
     #  Coins to download
     symbol = 'BTC-USD'
 
     #  Fetch data for coin symbols
 
     print(f"Loading data for {symbol}")
-    df = load_historic_data(symbol, start_date_str, today_date_str, period, interval, prepost)
+    df = load_historic_data(symbol, start_date_str, end_date_str, period, interval, prepost)
     df = cleanup(df)
     file_name = f"data/{today_date_str}_{symbol}_{period}_{interval}.csv"
     df.to_csv(f"{file_name}")

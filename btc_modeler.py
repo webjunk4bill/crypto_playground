@@ -72,14 +72,22 @@ def predict():
 #real data
 
 #todo: write a cleaner version, maybe just aggregate data and organize it.
-latest_btc_price = 100000 # i.e. the price you start the position with.
-data_file_a = "data/2025-02-09_BTC-USD_14d_1m.csv"
+data_file_a = "data/2025-02-10_BTC-USD_28d_1m.csv"
 df1 = pd.read_csv(data_file_a)
-data_file_b = "data/2025-02-09_BTC-USD_7d_1m.csv"
+data_file_b = "data/2025-02-10_BTC-USD_21d_1m.csv"
 df2 = pd.read_csv(data_file_b)
+data_file_c = "data/2025-02-10_BTC-USD_14d_1m.csv"
+df3 = pd.read_csv(data_file_c)
+data_file_d = "data/2025-02-10_BTC-USD_7d_1m.csv"
+df4 = pd.read_csv(data_file_d)
 
-df = pd.concat([df1, df2])
+df = pd.concat([df1, df2, df3, df4], ignore_index=True)
 df.drop_duplicates(subset=["Date"], inplace=True, keep='first')
+latest_btc_price = df["Price"].values[0] # i.e. the price you start the position with.
+
+
+print(df["Price"].values[0])
+print(df["Price"].values[-1])
 
 
 
@@ -100,8 +108,8 @@ df.drop_duplicates(subset=["Date"], inplace=True, keep='first')
 
 # Minute calc
 tick_spacing = 100
-weekly_rewards = 394411
-tvl_rewarded = 7E6  # This can change quite a bit and determines how "concentrated" the pool is
+weekly_rewards = 445000
+tvl_rewarded = 2E6  # This can change quite a bit and determines how "concentrated" the pool is
 apr_per_tick = weekly_rewards / tvl_rewarded * 52 * 100
 seed = 10000
 fee_per_ut_per_tick = apr_per_tick / 100 / 365 / 24 / 60 * seed
@@ -116,11 +124,14 @@ class RangeMode(Enum):
 
 
 # Decide on ranges to use.
-export_data = []
+data = []
 min_tolerance = 2
-max_tolerance = 7
+max_tolerance = 14
+force_min = None
+force_max = None
 
-for range_mode in [RangeMode.EVEN, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH]:
+# for range_mode in [RangeMode.EVEN, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH]:
+for range_mode in [RangeMode.EVEN]:
 
     for r in range(min_tolerance, max_tolerance + 1):
 
@@ -137,6 +148,11 @@ for range_mode in [RangeMode.EVEN, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH
             high_pct = 2
             low_pct = r
 
+        if force_min is not None:
+            low_pct = force_min
+        if force_max is not None:
+            high_pct = force_max
+
 
         # Convert to ticks based on spacing
         high_tick = int(high_pct * tick_spacing / 100)
@@ -147,6 +163,9 @@ for range_mode in [RangeMode.EVEN, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH
         il = None
         gains = None
         rebalance = True
+        rebalance_counter = 0
+        in_range_counter = 0
+
 
         btc = hc.Token("BTC", latest_btc_price)
         usdc = hc.Token("USDC", 1)
@@ -155,21 +174,21 @@ for range_mode in [RangeMode.EVEN, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH
         btc_usdc.setup_new_position(seed, low_tick, high_tick)
         for price in df["Price"]:
             btc.price = price
-            btc_usdc.update_token_balances(1/24)
+            btc_usdc.update_token_balances(1/1440)
+
             if btc_usdc.in_range:
-                btc_usdc.fees_accrued += fee_per_ut * 0.982  # VFAT charges 1.8% fee on AERO rewards
+                btc_usdc.fees_accrued += fee_per_ut * 0.991  # VFAT charges 1.8% fee on AERO rewards
+                in_range_counter += 1
             elif rebalance:
                 btc_usdc.rebalance(low_tick, high_tick)
+                rebalance_counter += 1
             else:
                 pass
         il = btc_usdc.impermanent_loss
         gains = btc_usdc.impermanent_gain
-        loss = pd.Series(il)
-        print(f'Gain from Simulation of Range +{high_pct}/-{low_pct} is {gains}')
-
-
-
-
+        total_position_value = btc_usdc.value + btc_usdc.dust
+        print(f'Gain from Simulation of Range +{high_pct}/-{low_pct} is {gains} and value is {total_position_value} versus a hold value of {btc_usdc.hold_value}')
+        print(f"In range {in_range_counter} and rebalanced {rebalance_counter} times")
 
 
         # todo: Bill's sim. Need to align dataframes to consolidate
