@@ -169,3 +169,15 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Mine
+.idea/
+.vscode/
+CL_returns.ipynb
+PersonalReturns.ipynb
+Testing.ipynb
+core/transaction_class.py
+outputs/
+private.py
+retired/v3-subgraph-main/
+vfat_lp_dust_transactions.csv
