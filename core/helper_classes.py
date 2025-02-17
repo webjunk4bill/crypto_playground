@@ -30,6 +30,7 @@ class LiquidityPool:
         Native price is y/x price or else liquidity calculations won't work
         token x and y need to be selected such that when the lower range is hit, it is all token x and the upper range is all token y
         """
+        # TODO: Add option to harvest fees instead of compounding them automatically
         self.token_x = token_x
         self.token_y = token_y
         self.liquidity = None
@@ -47,7 +48,10 @@ class LiquidityPool:
         self.total_fees = 0
         self.tick_spacing = tick_spacing
         self.dust = 0
-        self.gm_rebalance = True
+        self.gm_rebalance = False
+        self.gm_start_tick = None
+        self.compound = False
+        self.tick_range_tracker = []  # track the various ranges used for gm rebalancing
     
     @property
     def value(self):
@@ -115,16 +119,12 @@ class LiquidityPool:
         return um.sqrtp_to_price(um.tick_to_sqrtp(self.current_tick // self.tick_spacing * self.tick_spacing))
     
     @property
-    def lower_range(self):
-        return um.sqrtp_to_price(um.tick_to_sqrtp(self.lower_tick))
-    
-    @property
-    def upper_range(self):
-        return um.sqrtp_to_price(um.tick_to_sqrtp(self.upper_tick))
+    def range(self):
+        return [um.sqrtp_to_price(um.tick_to_sqrtp(self.lower_tick)), um.sqrtp_to_price(um.tick_to_sqrtp(self.upper_tick))]
     
     @property
     def in_range(self):
-        if self.lower_range <= self.native_price <= self.upper_range:
+        if self.range[0] <= self.native_price <= self.range[1]:
             return True
         else:
             return False
@@ -133,6 +133,8 @@ class LiquidityPool:
         # Ticks are fixed based on the liquidity tick, not the current tick (could be in between)
         self.upper_tick = self.current_liq_tick + ticks_higher * self.tick_spacing
         self.lower_tick = self.current_liq_tick - ticks_lower * self.tick_spacing
+        self.gm_start_tick = self.current_liq_tick
+        self.tick_range_tracker.append([ticks_lower, ticks_higher])
         self.add_liquidity(seed)
         # Make note of the initial token values to look at impermanent loss
         if self.initial_setup:
@@ -148,36 +150,41 @@ class LiquidityPool:
         token_x_bal = seed * (1 - self.ratio) / self.token_x.price
         token_y_bal = seed * self.ratio / self.token_y.price
         # Calculate liquidity
-        liq_x = um.liquidity_x(token_x_bal, self.native_price, self.upper_range)
-        liq_y = um.liquidity_y(token_y_bal, self.native_price, self.lower_range)
+        liq_x = um.liquidity_x(token_x_bal, self.native_price, self.range[1])
+        liq_y = um.liquidity_y(token_y_bal, self.native_price, self.range[0])
         self.liquidity = min(liq_x, liq_y)
         self.update_token_balances(0)  # need to align with ticks, not always even
         if not self.initial_setup:
             self.dust += seed - self.value  # add to dust
         
-    def update_token_balances(self, duration):
+    def update_token_balances(self, duration, fee_per_ut_per_tick=0):
         self.duration += duration  # add duration days
-        # Check to make sure not out of range
-        if self.native_price < self.lower_range:
-            price = self.lower_range
-        elif self.native_price > self.upper_range:
-            price = self.upper_range
+        # Check to make sure not out of range.  If out, set the price to the boundary edge to calculate the token amount
+        if self.native_price < self.range[0]:
+            price = self.range[0]
+        elif self.native_price > self.range[1]:
+            price = self.range[1]
         else:
             price = self.native_price
-        self.token_x.balance = um.calc_amount_x(self.liquidity, price, self.upper_range)
-        self.token_y.balance = um.calc_amount_y(self.liquidity, price, self.lower_range)
+            # Accure fees if in range
+            self.fees_accrued  += fee_per_ut_per_tick / sum(self.tick_range_tracker[-1])
+        self.token_x.balance = um.calc_amount_x(self.liquidity, price, self.range[1])
+        self.token_y.balance = um.calc_amount_y(self.liquidity, price, self.range[0])
         self.calc_apr_for_duration()
 
     def rebalance(self, ticks_lower, ticks_higher):
-        if self.current_tick <= self.lower_tick and self.gm_rebalance:
-            # Use geometric mean rebalancing, don't "chase" downwards
-            self.lower_tick -= ticks_lower * self.tick_spacing - 1
-            self.upper_tick += ticks_higher * self.tick_spacing - 1
+        if self.gm_rebalance:
+            current_liq_tick = self.gm_start_tick
         else:
-            self.upper_tick = self.current_liq_tick + ticks_higher * self.tick_spacing - 1
-            self.lower_tick = self.current_liq_tick - ticks_lower * self.tick_spacing - 1
-        seed = self.value * 0.9999  # VFAT charges 0.01% fees on the balance
-        self.fees_accrued = 0  # fees get compounded into the new balance
+            current_liq_tick = self.current_liq_tick
+        self.upper_tick = current_liq_tick + ticks_higher * self.tick_spacing
+        self.lower_tick = current_liq_tick - ticks_lower * self.tick_spacing
+        self.tick_range_tracker.append([ticks_lower, ticks_higher])
+        if self.compound:
+            seed = self.value * 0.9999  # VFAT charges 0.01% fees on the balance
+            self.fees_accrued = 0  # fees get compounded into the new balance
+        else:
+            seed = (self.value - self.fees_accrued) * 0.9999  # VFAT charges 0.01% fees on the balance
         self.add_liquidity(seed)
 
     def calc_apr_for_duration(self):
@@ -191,10 +198,10 @@ class LiquidityPool:
         Only use if balances, prices, and ranges are all available and set
         i.e. this should be used instead of the initialize_range method, but not both
         """
-        self.lower_range = low_price
-        self.upper_range = high_price
-        liq_x = um.liquidity_x(self.token_x.balance, self.native_price, self.upper_range)
-        liq_y = um.liquidity_y(self.token_y.balance, self.native_price, self.lower_range)
+        self.range[0] = low_price
+        self.range[1] = high_price
+        liq_x = um.liquidity_x(self.token_x.balance, self.native_price, self.range[1])
+        liq_y = um.liquidity_y(self.token_y.balance, self.native_price, self.range[0])
         self.liquidity = min(liq_x, liq_y)
         if self.initial_setup:
             self.seed = self.value
@@ -221,7 +228,7 @@ class LiquidityPool:
             f"LP Value: ${self.value:.2f}\n"
             f"Current Price: {self.native_price:.6f} in {self.token_y.symbol}/{self.token_x.symbol}\n"
             f"Ticks (low, current, high) {self.lower_tick}, {self.current_tick}, {self.upper_tick}\n"
-            f"Range: {self.lower_range:.6f} ~ {self.upper_range:.6f}\n"
+            f"Range: {self.range[0]:.6f} ~ {self.range[1]:.6f}\n"
             f"Hold Value: ${self.hold_value:.2f}\n"
             f"Impermanent Loss: ${self.impermanent_loss:.2f}\n"
             f"Fee APR required to offset IL: {self.apr:.1f}%\n"
