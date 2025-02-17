@@ -51,7 +51,9 @@ class LiquidityPool:
         self.gm_rebalance = False
         self.gm_start_tick = None
         self.compound = False
-        self.tick_range_tracker = []  # track the various ranges used for gm rebalancing
+        self.tick_offset_tracker = []  # track the various ranges used for gm rebalancing
+        self.price_range_tracker = []
+        self.rebalance_target_tick = None
     
     @property
     def value(self):
@@ -95,7 +97,11 @@ class LiquidityPool:
         
     @property
     def ratio(self):
-        return (self.current_tick - self.lower_tick) / (self.upper_tick - self.lower_tick)
+        ratio = (self.current_tick - self.lower_tick) / (self.upper_tick - self.lower_tick)
+        if ratio > 0:
+            return ratio
+        else: 
+            return None
     
     @property
     def current_tick(self):
@@ -129,12 +135,28 @@ class LiquidityPool:
         else:
             return False
         
+    @property
+    def gm_return_range(self):
+        """
+        Keep track of the range for when we should narrow the range again
+        This needs to be not just when it's back within the range, but closer to the GM
+        Perhaps it should be half of the original range?
+        """
+        if len(self.price_range_tracker) >= 2:
+            # Use half the original range
+            r = self.price_range_tracker[0][1] - self.price_range_tracker[0][0]
+            mid = np.mean(self.price_range_tracker[0])
+            return [mid - r/2/2, mid + r/2/2]
+        else:
+            return None
+        
     def setup_new_position(self, seed, ticks_lower, ticks_higher):
         # Ticks are fixed based on the liquidity tick, not the current tick (could be in between)
         self.upper_tick = self.current_liq_tick + ticks_higher * self.tick_spacing
         self.lower_tick = self.current_liq_tick - ticks_lower * self.tick_spacing
         self.gm_start_tick = self.current_liq_tick
-        self.tick_range_tracker.append([ticks_lower, ticks_higher])
+        self.tick_offset_tracker.append([ticks_lower, ticks_higher])
+        self.price_range_tracker.append(self.range)
         self.add_liquidity(seed)
         # Make note of the initial token values to look at impermanent loss
         if self.initial_setup:
@@ -167,7 +189,7 @@ class LiquidityPool:
         else:
             price = self.native_price
             # Accure fees if in range
-            self.fees_accrued  += fee_per_ut_per_tick / sum(self.tick_range_tracker[-1])
+            self.fees_accrued  += fee_per_ut_per_tick / sum(self.tick_offset_tracker[-1])
         self.token_x.balance = um.calc_amount_x(self.liquidity, price, self.range[1])
         self.token_y.balance = um.calc_amount_y(self.liquidity, price, self.range[0])
         self.calc_apr_for_duration()
@@ -179,7 +201,8 @@ class LiquidityPool:
             current_liq_tick = self.current_liq_tick
         self.upper_tick = current_liq_tick + ticks_higher * self.tick_spacing
         self.lower_tick = current_liq_tick - ticks_lower * self.tick_spacing
-        self.tick_range_tracker.append([ticks_lower, ticks_higher])
+        self.tick_offset_tracker.append([ticks_lower, ticks_higher])
+        self.price_range_tracker.append(self.range)
         if self.compound:
             seed = self.value * 0.9999  # VFAT charges 0.01% fees on the balance
             self.fees_accrued = 0  # fees get compounded into the new balance
