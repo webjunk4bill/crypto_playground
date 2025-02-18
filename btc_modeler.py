@@ -83,8 +83,8 @@ data_file_d = "data/2025-02-10_BTC-USD_7d_1m.csv"
 df4 = pd.read_csv(data_file_d)
 
 # df = pd.concat([df1, df2, df3, df4], ignore_index=True)
-# df = pd.concat([df3, df4], ignore_index=True)
-df = df1.copy()
+df = pd.concat([df1, df2], ignore_index=True)
+# df = df1.copy()
 # df.drop_duplicates(subset=["Date"], inplace=True, keep='first')
 
 # TODO: Get volume weightings and modify unit-time fees with them
@@ -93,7 +93,7 @@ df.loc[:, "Price"].plot()
 plt.title('Bitcoin Price Over Time')
 plt.xlabel('Time (minutes)')
 plt.ylabel('Price (USD)')
-# plt.show()
+plt.show()
 latest_btc_price = df.loc[:,  "Price"].iloc[0]
 print(latest_btc_price)
 
@@ -134,7 +134,7 @@ class RangeMode(Enum):
 # Decide on ranges to use.
 export_data = []
 min_tolerance = 2
-max_tolerance = 5
+max_tolerance = 10
 
 for range_mode in [RangeMode.EVEN]:  #, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH]:
 
@@ -163,7 +163,7 @@ for range_mode in [RangeMode.EVEN]:  #, RangeMode.LTH, RangeMode.FIXL, RangeMode
         il = None
         gains = None
         rebalance = True
-        time_to_rebalance = 60  # minutes out of range before a rebalance can occur
+        time_to_rebalance = 0  # minutes out of range before a rebalance can occur
 
         btc = hc.Token("BTC", latest_btc_price)
         usdc = hc.Token("USDC", 1)
@@ -181,36 +181,35 @@ for range_mode in [RangeMode.EVEN]:  #, RangeMode.LTH, RangeMode.FIXL, RangeMode
                 raise Exception("Tick Offset Tracker and Price Trackers have diverged")
             btc.price = price
             btc_usdc.update_token_balances(1/24/60, fee_per_ut_per_tick)
+            # Check if the liquidity pool is out of range and if rebalancing is enabled
             if btc_usdc.gm_rebalance:
                 if not btc_usdc.in_range and rebalance:
+                    # Check if it's time to rebalance
                     if time_to_rebal_ctr >= time_to_rebalance:
-                        # get the original range:
+                        # Get the original and last ranges
                         low1 = btc_usdc.tick_offset_tracker[0][0]
                         high1 = btc_usdc.tick_offset_tracker[0][1]
-                        # get the last range:
                         low2 = btc_usdc.tick_offset_tracker[-1][0]
                         high2 = btc_usdc.tick_offset_tracker[-1][1]
                         # Increase the range around the Geometric Mean
                         btc_usdc.rebalance(low1 + low2, high1 + high2)
-                        # print(btc_usdc)
                         rebal_ctr += 1
+                        time_to_rebal_ctr = 0
                         time_out_of_range += 1
                     else:
                         time_to_rebal_ctr += 1
                         time_out_of_range += 1
                 elif btc_usdc.in_range and rebalance and btc_usdc.gm_return_range:
-                    # check to see if it's time to shrink the range
+                    # Check if the price is back within the Geometric Mean return range
                     if btc_usdc.gm_return_range[0] <= price <= btc_usdc.gm_return_range[1]:
-                        # print(btc_usdc)
-                        # price is back inside and time to shrink
+                        # Shrink the range
                         low = btc_usdc.tick_offset_tracker[-2][0]
                         high = btc_usdc.tick_offset_tracker[-2][1]
-                        # remove the last range from the array, no longer needed
-                        # Need to pop 2 elements because one will be added back during the re-balance
-                        _ = btc_usdc.tick_offset_tracker.pop()
-                        _ = btc_usdc.tick_offset_tracker.pop()
-                        _ = btc_usdc.price_range_tracker.pop()
-                        _ = btc_usdc.price_range_tracker.pop()
+                        # Remove the last two ranges from the trackers
+                        btc_usdc.tick_offset_tracker.pop()
+                        btc_usdc.tick_offset_tracker.pop()
+                        btc_usdc.price_range_tracker.pop()
+                        btc_usdc.price_range_tracker.pop()
                         btc_usdc.rebalance(low, high)
                         rebal_ctr += 1
                     else:
@@ -220,7 +219,7 @@ for range_mode in [RangeMode.EVEN]:  #, RangeMode.LTH, RangeMode.FIXL, RangeMode
                     no_rebal_ctr += 1
                     time_to_rebal_ctr = 0
                 else:
-                    pass
+                    time_out_of_range += 1
             else:
                 if btc_usdc.in_range:
                     no_rebal_ctr += 1 
@@ -230,17 +229,19 @@ for range_mode in [RangeMode.EVEN]:  #, RangeMode.LTH, RangeMode.FIXL, RangeMode
                         btc_usdc.rebalance(low_tick, high_tick)
                         rebal_ctr += 1
                         time_out_of_range += 1
+                        time_to_rebal_ctr = 0
                     else:
                         time_to_rebal_ctr += 1
                         time_out_of_range += 1
                 else:
-                    pass
+                    time_out_of_range += 1
         il = btc_usdc.impermanent_loss
         gains = btc_usdc.impermanent_gain
         loss = pd.Series(il)
         print(f'Gain from Simulation of Range +{high_pct}/-{low_pct} is ${gains:.2f}')
         print(f"In range: {no_rebal_ctr}, Rebalances: {rebal_ctr}, Out of Range: {time_out_of_range}")
         print(f"Total Fees Collected: ${btc_usdc.fees_accrued:.2f}")
+        print(f"Average Fee APR: {btc_usdc.fees_accrued / btc_usdc.value * 100 * 365:.1f}")
 
 
 
