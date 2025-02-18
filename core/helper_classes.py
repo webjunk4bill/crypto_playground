@@ -57,7 +57,11 @@ class LiquidityPool:
     
     @property
     def value(self):
-        return self.token_x.value + self.token_y.value + self.fees_accrued
+        return self.token_x.value + self.token_y.value
+    
+    @property
+    def value_plus_fees(self):
+        return self.value + self.fees_accrued + self.total_fees
     
     @property
     def native_price(self):
@@ -89,7 +93,7 @@ class LiquidityPool:
         """
         Negative value means that holding the LP leads to "impermanent gains"
         """
-        return self.hold_value - self.value
+        return self.hold_value - self.value_plus_fees
 
     @property
     def impermanent_gain(self):
@@ -204,10 +208,11 @@ class LiquidityPool:
         self.tick_offset_tracker.append([ticks_lower, ticks_higher])
         self.price_range_tracker.append(self.range)
         if self.compound:
-            seed = self.value * 0.9999  # VFAT charges 0.01% fees on the balance
+            seed = self.value_plus_fees * 0.9999  # VFAT charges 0.01% fees on the balance
             self.fees_accrued = 0  # fees get compounded into the new balance
         else:
-            seed = (self.value - self.fees_accrued) * 0.9999  # VFAT charges 0.01% fees on the balance
+            self.withdraw_fees_accrued()  # Harvest Fees
+            seed = self.value * 0.9999  # VFAT charges 0.01% fees on the balance
         self.add_liquidity(seed)
 
     def calc_apr_for_duration(self):
@@ -216,26 +221,8 @@ class LiquidityPool:
         else:
             self.apr = 0
 
-    def setup_existing_position(self, low_price, high_price):
-        """
-        Only use if balances, prices, and ranges are all available and set
-        i.e. this should be used instead of the initialize_range method, but not both
-        """
-        self.range[0] = low_price
-        self.range[1] = high_price
-        liq_x = um.liquidity_x(self.token_x.balance, self.native_price, self.range[1])
-        liq_y = um.liquidity_y(self.token_y.balance, self.native_price, self.range[0])
-        self.liquidity = min(liq_x, liq_y)
-        if self.initial_setup:
-            self.seed = self.value
-            self.init_x_price = self.token_x.price
-            self.init_y_price = self.token_y.price
-            self.init_x_bal = self.token_x.balance
-            self.init_y_bal = self.token_y.balance
-            self.initial_setup = False
-
     def coumpound_fees_accured(self):
-        seed = self.value + self.fees_accrued
+        seed = self.value_plus_fees
         self.total_fees += self.fees_accrued
         self.fees_accrued = 0 
         self.add_liquidity(seed)
@@ -248,7 +235,7 @@ class LiquidityPool:
     def __repr__(self):
         return (
             f"{self.token_x.symbol}: {self.token_x.balance:.6f} (${self.token_x.value:.2f})| {self.token_y.symbol}: {self.token_y.balance:.6f} (${self.token_y.value:.2f})\n" 
-            f"LP Value: ${self.value:.2f}\n"
+            f"LP Value: ${self.value:.2f}, Fees Collected: ${self.total_fees:.2f}\n"
             f"Current Price: {self.native_price:.6f} in {self.token_y.symbol}/{self.token_x.symbol}\n"
             f"Ticks (low, current, high) {self.lower_tick}, {self.current_tick}, {self.upper_tick}\n"
             f"Range: {self.range[0]:.6f} ~ {self.range[1]:.6f}\n"
