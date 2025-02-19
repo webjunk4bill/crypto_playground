@@ -82,7 +82,7 @@ df3 = pd.read_csv(data_file_c)
 data_file_d = "data/2025-02-10_BTC-USD_7d_1m.csv"
 df4 = pd.read_csv(data_file_d)
 
-df = pd.concat([df1, df2, df3, df4], ignore_index=True)
+df = pd.concat([df3, df4], ignore_index=True)
 # df = pd.concat([df1, df2], ignore_index=True)
 # df = df1.copy()
 # df.drop_duplicates(subset=["Date"], inplace=True, keep='first')
@@ -95,7 +95,7 @@ plt.xlabel('Time (minutes)')
 plt.ylabel('Price (USD)')
 plt.show()
 latest_btc_price = df.loc[:,  "Price"].iloc[0]
-print(latest_btc_price)
+print(f"\nSimulation Starting Price: ${latest_btc_price:.2f}")
 
 
 
@@ -121,7 +121,7 @@ tvl_rewarded = 2.1E6  # This can change quite a bit and determines how "concentr
 apr_per_tick = weekly_rewards / tvl_rewarded * 52 * 100
 seed = 10000
 fee_per_ut_per_tick = apr_per_tick / 100 / 365 / 24 / 60 * seed
-print(f"Fee per UT, per liquidity tick: ${fee_per_ut_per_tick:.2f}")
+print(f"Fee per UT, per liquidity tick: ${fee_per_ut_per_tick:.2f}\n")
 
 class RangeMode(Enum):
     EVEN = 'EVEN'
@@ -163,13 +163,13 @@ for range_mode in [RangeMode.EVEN]:  #, RangeMode.LTH, RangeMode.FIXL, RangeMode
         il = None
         gains = None
         rebalance = True
-        time_to_rebalance = 10  # minutes out of range before a rebalance can occur
+        time_to_rebalance = 60  # minutes out of range before a rebalance can occur
 
         btc = hc.Token("BTC", latest_btc_price)
         usdc = hc.Token("USDC", 1)
         btc_usdc = hc.LiquidityPool(btc, usdc)
         # Set type of re-balance
-        btc_usdc.gm_rebalance = False
+        btc_usdc.gm_rebalance = True
         btc_usdc.compound = False
         btc_usdc.setup_new_position(seed, low_tick, high_tick)
         rebal_ctr = 0
@@ -233,10 +233,11 @@ for range_mode in [RangeMode.EVEN]:  #, RangeMode.LTH, RangeMode.FIXL, RangeMode
         loss = pd.Series(il)
         print(f'Gain from Simulation of Range +{high_pct}/-{low_pct} is ${gains:.2f}')
         print(f"In range: {in_range_ctr}, Rebalances: {rebal_ctr}, Out of Range: {out_of_range_ctr}")
-        print(f"Total Fees Collected: ${btc_usdc.total_fees:.2f}")
+        print(f"Total Fees Collected: ${btc_usdc.total_fees:.2f} | Dust returned: ${btc_usdc.dust:.2f}")
         days_run = len(df["Price"]) / 60 / 24
         print(f"Average Fee APR: {btc_usdc.total_fees / btc_usdc.value * 100 * 365 / days_run:.1f}")
-        print(f"LP value plus fees: ${btc_usdc.value_plus_fees:.2f} | Hold Value ${btc_usdc.hold_value:.2f}\n")
+        print(f"Original Seed: ${seed - btc_usdc.dust:.2f} | LP value plus fees: ${btc_usdc.value_plus_fees:.2f} | Hold Value ${btc_usdc.hold_value:.2f}\n")
+print(f"Simulation Ending Price: ${df.loc[:,  "Price"].iloc[-1]:.2f}")
 
 
 

@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import requests
 import time
+from scipy.optimize import minimize_scalar
 
 class Token:
     def __init__(self, symbol, price):
@@ -98,14 +99,6 @@ class LiquidityPool:
     @property
     def impermanent_gain(self):
         return -1 * self.impermanent_loss
-        
-    @property
-    def ratio(self):
-        ratio = (self.current_tick - self.lower_tick) / (self.upper_tick - self.lower_tick)
-        if ratio > 0:
-            return ratio
-        else: 
-            return None
     
     @property
     def current_tick(self):
@@ -171,10 +164,31 @@ class LiquidityPool:
             self.init_y_bal = self.token_y.balance
             self.initial_setup = False
 
+    def calculate_new_lp_value(self, ratio, seed):
+        xbal = seed * (1 - ratio) / self.token_x.price
+        ybal = seed * ratio / self.token_y.price
+        liq_x = um.liquidity_x(xbal, self.native_price, self.range[1])
+        liq_y = um.liquidity_y(ybal, self.native_price, self.range[0])
+        liquidity = min(liq_x, liq_y)
+        xbal2 = um.calc_amount_x(liquidity, self.native_price, self.range[1])
+        ybal2 = um.calc_amount_y(liquidity, self.native_price, self.range[0])
+        value = xbal2 * self.token_x.price + ybal2 * self.token_y.price
+        return value
+
+    def ratio_optimization(self, ratio, seed):
+        value = self.calculate_new_lp_value(ratio, seed)
+        # objective function should minimize the delta to minimize dust
+        if value <= seed:
+            return seed - value
+        else:
+            return value - seed  # penalize if value exceeds seed, can't "gain" money
+
     def add_liquidity(self, seed):
+        # Get the optimum ratio using scipy function
+        ratio = minimize_scalar(self.ratio_optimization, bounds=(0, 1), args=(seed), method='bounded').x
         # As price moves to the upper range (and therefore the "ratio"), the amount of x is decreasing and the amount of y is increasing
-        token_x_bal = seed * (1 - self.ratio) / self.token_x.price
-        token_y_bal = seed * self.ratio / self.token_y.price
+        token_x_bal = seed * (1 - ratio) / self.token_x.price
+        token_y_bal = seed * ratio / self.token_y.price
         # Calculate liquidity
         liq_x = um.liquidity_x(token_x_bal, self.native_price, self.range[1])
         liq_y = um.liquidity_y(token_y_bal, self.native_price, self.range[0])
