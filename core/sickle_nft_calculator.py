@@ -90,7 +90,7 @@ class SickleNFTcalculator:
         self.wallet = wallet_addr.lower()
         self.wal_shortname = f"{self.wallet[2:6].lower()}-{self.wallet[-4:].lower()}"
         self.csv_path = f"outputs/{self.wal_shortname}_tracker.csv"
-        self.df = pd.read_csv(self.csv_path, parse_dates=["timeStamp"])
+        self.df = pd.read_csv(self.csv_path, parse_dates=["timeStamp"]).set_index("timeStamp")
         self.df_per_nft = self.get_each_nft_seriesID()
         
     def get_each_nft_seriesID(self):
@@ -109,7 +109,7 @@ class SickleNFTcalculator:
         Retrieve a dataframe of the daily fees
         """
         if "date" not in self.df.columns:
-            self.df["date"] = self.df["timeStamp"].dt.date
+            self.df["date"] = self.df.index.date
         if recorded == "new":
             piv_df = self.df[(self.df["transactionType"] == "fee") & (self.df["recorded"] == False)].pivot_table(index=["date", "tokenSymbol"], values=["amount", "valueUsd"], aggfunc='sum')
             if piv_df.empty:
@@ -126,6 +126,7 @@ class SickleNFTcalculator:
             print(piv_df.pivot_table(index=["tokenSymbol"], values=["amount", "valueUsd"], aggfunc='sum'))
         else:
             print(f"Total Fees collected to date: ${total_fees:.2f}")
+            print(piv_df.pivot_table(index=["tokenSymbol"], values=["amount", "valueUsd"], aggfunc='sum'))
         print(piv_df)
         return piv_df, total_fees
     
@@ -145,7 +146,7 @@ class SickleNFTcalculator:
         """
         perf = {}
         for name, df in self.df_per_nft.items():
-            df = df.sort_values(by=["timeStamp"], ascending=True)
+            df = df.sort_index(ascending=True)
             net_funding = df[df.transactionType == "fund"]["valueUsd"].sum() + df[df.transactionType == "dust"]["valueUsd"].sum()
             net_funding = abs(net_funding)
             total_fees = df[df.transactionType == "fee"]["valueUsd"].sum()
@@ -158,7 +159,7 @@ class SickleNFTcalculator:
                     start_price = df[(df.eventType == "Deposit") & (df.tokenSymbol == token)].iloc[0].price
                     end_price = df[df.tokenSymbol == token].price.iloc[-1]
             hold_token = net_funding / start_price
-            apr = total_fees / net_funding * 365 * 100 / (df.timeStamp.max() - df.timeStamp.min()).days
+            apr = total_fees / net_funding * 365 * 100 / (df.index.max() - df.index.min()).days
             token_gain = (end_price / start_price - 1) * 100
             # Need to get the last tokenID, sorted by timeStamp
             end_token_id = int(df.tokenID.iloc[-1])
