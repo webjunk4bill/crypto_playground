@@ -48,7 +48,7 @@ class SickleNFTtracker:
         # Find the last block seen for each seriesID in the dataframe
         last_block_seen = []
         for seriesID in df_old['seriesID'].unique():
-            last_block_seen.append(df_old[df_old['seriesID'] == seriesID]['blockNumber'].iloc[-3])
+            last_block_seen.append(df_old[df_old['seriesID'] == seriesID]['blockNumber'].iloc[-2])
             print(f"Last block seen for seriesID {seriesID} is {last_block_seen[-1]}")  
         if self.end_block <  min(last_block_seen):
             print(f"extracting older data, keeping block pull from {self.start_block} to {self.end_block}")
@@ -143,6 +143,8 @@ class SickleNFTtracker:
                 for _, mint in new_mint.iterrows():
                     self.series_map[mint["tokenID"]] = self.series_map[row["tokenID"]]
         df.loc[:, "seriesID"] = df["tokenID"].map(self.series_map)
+        # Remove the Burns, keep only the Mints
+        df = df.loc[df["eventType"] == "Mint"]
 
         # Now that Series IDs are mapped, update proper event Types
         tx_hashes = df["hash"].unique()
@@ -171,7 +173,7 @@ class SickleNFTtracker:
         # Link token transfers to NFT burn and mint transactions
         df = df.merge(self.nft_df[['hash', 'seriesID', 'eventType', 'tokenID']], on='hash', how='left')
         # Remove duplicate token transfers within the same transaction hash
-        df = df.drop_duplicates(subset=["hash", "from", "to", "amount", "tokenSymbol"])
+        # df = df.drop_duplicates(subset=["hash", "from", "to", "amount", "tokenSymbol"])
 
         # Get a list of hashes that don't have an event type yet
         tx_hashes = df[pd.isna(df["eventType"])]["hash"].unique()
