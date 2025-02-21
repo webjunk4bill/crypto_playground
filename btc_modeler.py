@@ -82,7 +82,7 @@ df3 = pd.read_csv(data_file_c)
 data_file_d = "data/2025-02-10_BTC-USD_7d_1m.csv"
 df4 = pd.read_csv(data_file_d)
 
-df = pd.concat([df3, df4], ignore_index=True)
+df = pd.concat([df1, df2, df3, df4], ignore_index=True)
 # df = pd.concat([df1, df2], ignore_index=True)
 # df = df1.copy()
 # df.drop_duplicates(subset=["Date"], inplace=True, keep='first')
@@ -163,13 +163,13 @@ for range_mode in [RangeMode.EVEN]:  #, RangeMode.LTH, RangeMode.FIXL, RangeMode
         il = None
         gains = None
         rebalance = True
-        time_to_rebalance = 60  # minutes out of range before a rebalance can occur
+        time_to_rebalance = 10  # minutes out of range before a rebalance can occur
 
         btc = hc.Token("BTC", latest_btc_price)
         usdc = hc.Token("USDC", 1)
         btc_usdc = hc.LiquidityPool(btc, usdc)
         # Set type of re-balance
-        btc_usdc.gm_rebalance = True
+        btc_usdc.gm_rebalance = False
         btc_usdc.compound = False
         btc_usdc.setup_new_position(seed, low_tick, high_tick)
         rebal_ctr = 0
