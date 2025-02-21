@@ -89,8 +89,8 @@ class SickleNFTcalculator:
     def __init__(self, wallet_addr):
         self.wallet = wallet_addr.lower()
         self.wal_shortname = f"{self.wallet[2:6].lower()}-{self.wallet[-4:].lower()}"
-        csv_path = f"outputs/{self.wal_shortname}_tracker.csv"
-        self.df = pd.read_csv(csv_path, parse_dates=["timeStamp"])
+        self.csv_path = f"outputs/{self.wal_shortname}_tracker.csv"
+        self.df = pd.read_csv(self.csv_path, parse_dates=["timeStamp"]).set_index("timeStamp")
         self.df_per_nft = self.get_each_nft_seriesID()
         
     def get_each_nft_seriesID(self):
@@ -109,7 +109,7 @@ class SickleNFTcalculator:
         Retrieve a dataframe of the daily fees
         """
         if "date" not in self.df.columns:
-            self.df["date"] = self.df["timeStamp"].dt.date
+            self.df["date"] = self.df.index.date
         if recorded == "new":
             piv_df = self.df[(self.df["transactionType"] == "fee") & (self.df["recorded"] == False)].pivot_table(index=["date", "tokenSymbol"], values=["amount", "valueUsd"], aggfunc='sum')
             if piv_df.empty:
@@ -123,10 +123,22 @@ class SickleNFTcalculator:
         total_fees = piv_df["valueUsd"].sum()
         if recorded == "new":
             print(f"Total Fees collected since last update: ${total_fees:.2f}")
+            print(piv_df.pivot_table(index=["tokenSymbol"], values=["amount", "valueUsd"], aggfunc='sum'))
         else:
             print(f"Total Fees collected to date: ${total_fees:.2f}")
+            print(piv_df.pivot_table(index=["tokenSymbol"], values=["amount", "valueUsd"], aggfunc='sum'))
         print(piv_df)
         return piv_df, total_fees
+    
+    def mark_transactions_recorded(self):
+        """
+        Mark all transactions as recorded
+        """
+        self.df.loc[:, "recorded"] = True
+        # remove date column from the dataframe
+        self.df = self.df.drop(columns=["date"])
+        self.df.set_index("timeStamp", inplace=True)
+        self.df.to_csv(self.csv_path)
     
     def analyze_lp_performance(self):
         """
@@ -134,7 +146,7 @@ class SickleNFTcalculator:
         """
         perf = {}
         for name, df in self.df_per_nft.items():
-            df = df.sort_values(by=["timeStamp"], ascending=True)
+            df = df.sort_index(ascending=True)
             net_funding = df[df.transactionType == "fund"]["valueUsd"].sum() + df[df.transactionType == "dust"]["valueUsd"].sum()
             net_funding = abs(net_funding)
             total_fees = df[df.transactionType == "fee"]["valueUsd"].sum()
@@ -144,10 +156,10 @@ class SickleNFTcalculator:
                 if token == "USDC":
                     continue
                 else:
-                    start_price = df[(df.eventType == "Deposit") & (df.tokenSymbol == token)].price.mean()
+                    start_price = df[(df.eventType == "Deposit") & (df.tokenSymbol == token)].iloc[0].price
                     end_price = df[df.tokenSymbol == token].price.iloc[-1]
             hold_token = net_funding / start_price
-            apr = total_fees / net_funding * 365 * 100 / (df.timeStamp.max() - df.timeStamp.min()).days
+            apr = total_fees / net_funding * 365 * 100 / (df.index.max() - df.index.min()).days
             token_gain = (end_price / start_price - 1) * 100
             # Need to get the last tokenID, sorted by timeStamp
             end_token_id = int(df.tokenID.iloc[-1])
@@ -192,6 +204,12 @@ class SickleLPTracker:
         self.volatile_price = None
         self.balances = self.calc_balances()
 
+    @property
+    def price_range(self):
+        lower = um.sqrtp_to_price(um.tick_to_sqrtp(self.lower_tick)) * 10 ** self.token0_dec / 10 ** self.token1_dec
+        upper = um.sqrtp_to_price(um.tick_to_sqrtp(self.upper_tick)) * 10 ** self.token0_dec / 10 ** self.token1_dec
+        return [lower, upper]
+
     def calc_balances(self):
         if self.token0_dec is None:
             raise ValueError("Token0 decimal is not set.")
@@ -228,3 +246,21 @@ class SickleLPTracker:
             "LP Value": self.value
         }
         return balances
+    
+    def __repr__(self):
+        return (f"SickleLPTracker ID: {self.id}\n"
+                f"Pool Address: {self.pool}\n"
+                f"Liquidity: {self.liquidity}\n"
+                f"Lower Tick: {self.lower_tick}\n"
+                f"Upper Tick: {self.upper_tick}\n"
+                f"Price Range: {self.price_range}\n"
+                f"Current Tick: {self.current_tick}\n"
+                f"Token0 Name: {self.token0_name}\n"
+                f"Token0 Decimal: {self.token0_dec}\n"
+                f"Token0 Price: {self.token0_price}\n"
+                f"Token1 Name: {self.token1_name}\n"
+                f"Token1 Decimal: {self.token1_dec}\n"
+                f"Token1 Price: {self.token1_price:.2f}\n"
+                f"Volatile Price: {self.volatile_price:.2f}\n"
+                f"LP Value: ${self.value:.2f}\n"
+                f"Balances: {self.balances}")
