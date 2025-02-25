@@ -1,7 +1,6 @@
 # Module imports
 import numpy as np
 from pandas import DataFrame
-
 import core.helper_classes as hc
 from core import farm
 import pandas as pd
@@ -11,117 +10,15 @@ import matplotlib.pyplot as plt
 import pycoingecko
 from aenum import Enum
 
-
-def predict():
-    # Keep the historical fetching below 90 days to get hourly based data
-    api_id = 'bitcoin'
-    end = pd.Timestamp(dt.today())
-    start = end - pd.DateOffset(days=80)  # Get previous years worth of data
-    btc_data = pd.DataFrame(hc.get_historical_prices(api_id, start, end)).T
-
-    # api_id = 'solana'
-    # end = pd.Timestamp(dt.today())
-    # start = end - pd.DateOffset(days=80)  # Get previous years worth of data
-    # sol_data = pd.DataFrame(hc.get_historical_prices(api_id, start, end)).T
-
-    # Use Weiner process to get future price predictions
-    lookback_days = 7  # Decide how much historical data to use for prediciton input
-    lookback_hours = lookback_days * 24
-    data = btc_data.copy().tail(lookback_hours)
-    data['gain'] = data['price'].pct_change()
-    mean_gain = data['gain'].mean()
-    var_multiplier = 2  # use this to get a wider range of outcomes
-    std_gain = data['gain'].std() * var_multiplier
-
-
-
-    latest_btc_price = btc_data['price'].values[-1]
-    btc = hc.Token("BTC", latest_btc_price)  # using latest price for  to project out
-    iterations = 2500  # Can adjust this for more variance if desired
-    predict_days = 14
-    predict_hours = predict_days * 24
-    b = hc.Brownian()
-    predict = []
-    for i in range(iterations):
-        x = b.stock_price(btc.price, mean_gain, std_gain, predict_hours, 1)
-        predict.append(x)
-    df = pd.DataFrame(predict).T
-
-    # Look at price prediction over time
-    mean_price = df.mean(axis=1)
-    min_price = df.min(axis=1)
-    max_price = df.max(axis=1)
-    std_price = df.std(axis=1)
-
-    plt.plot(df.index, mean_price, label='Mean')
-    plt.plot(df.index, min_price, label='Min')
-    plt.plot(df.index, max_price, label='Max')
-    plt.title('Bitcoin Price Prediction - Bounds')
-    plt.xlabel('Time (hours)')
-    plt.ylabel('Price (USD)')
-    plt.legend()
-    plt.show()
-
-    df.plot(legend=False, ylabel='Price(USD)', xlabel='Hours',title='Bitcoin Price Prediction Simulations')
-
-    return df, latest_btc_price
-
-#prediction output, enable if you want to run the original method
-# df, latest_btc_price = predict()
-
-#real data
-
-#todo: write a cleaner version, maybe just aggregate data and organize it.
-latest_btc_price = 100000 # i.e. the price you start the position with.
-data_file_a = "data/2025-02-10_BTC-USD_28d_1m.csv"
-df1 = pd.read_csv(data_file_a)
-data_file_b = "data/2025-02-10_BTC-USD_21d_1m.csv"
-df2 = pd.read_csv(data_file_b)
-data_file_c = "data/2025-02-10_BTC-USD_14d_1m.csv"
-df3 = pd.read_csv(data_file_c)
-data_file_d = "data/2025-02-10_BTC-USD_7d_1m.csv"
-df4 = pd.read_csv(data_file_d)
-
-df = pd.concat([df1, df2, df3, df4], ignore_index=True)
-# df = pd.concat([df1, df2], ignore_index=True)
-# df = df1.copy()
-# df.drop_duplicates(subset=["Date"], inplace=True, keep='first')
-
-# TODO: Get volume weightings and modify unit-time fees with them
-
-df.loc[:, "Price"].plot()
-plt.title('Bitcoin Price Over Time')
-plt.xlabel('Time (minutes)')
-plt.ylabel('Price (USD)')
-plt.show()
-latest_btc_price = df.loc[:,  "Price"].iloc[0]
-print(f"\nSimulation Starting Price: ${latest_btc_price:.2f}")
-
-
-
-# cbBTC/USDC Farm stats on Aerodrome
-# btc = farm.Farm(token_a='btc', token_b='USDC', weekly_reward=400652, tvl_reward=1.8E6)
-# btc.set_seed(10000)
-#todo:Zee's farm class, refactor.
-
-# Hourly calc
-# tick_spacing = 100
-# weekly_rewards = 394411
-# tvl_rewarded = 7E6  # This can change quite a bit and determines how "concentrated" the pool is
-# apr_per_tick = weekly_rewards / tvl_rewarded * 52 * 100
-# seed = 7500
-# fee_per_ut_per_tick = apr_per_tick / 100 / 365 / 24 * seed
-# print(f"Fee per hour, per liquidity tick: ${fee_per_hour_per_tick:.2f}")
-
-
-# Minute calc
-tick_spacing = 100
-weekly_rewards = 440000
-tvl_rewarded = 2.1E6  # This can change quite a bit and determines how "concentrated" the pool is
-apr_per_tick = weekly_rewards / tvl_rewarded * 52 * 100
-seed = 10000
-fee_per_ut_per_tick = apr_per_tick / 100 / 365 / 24 / 60 * seed
-print(f"Fee per UT, per liquidity tick: ${fee_per_ut_per_tick:.2f}\n")
+# Constants
+TICK_SPACING = 100
+WEEKLY_REWARDS = 440000
+TVL_REWARDED = 2.1E6  # This can change quite a bit and determines how "concentrated" the pool is
+SEED = 10000
+MIN_TOLERANCE = 2
+MAX_TOLERANCE = 3
+TOKEN0 = 'BTC'
+TOKEN1 = 'USDC'
 
 class RangeMode(Enum):
     EVEN = 'EVEN'
@@ -130,142 +27,250 @@ class RangeMode(Enum):
     LTH = 'LTH'
     HTL = 'HTL'
 
+def load_data():
+    data_files = [
+        "data/2025-02-10_BTC-USD_28d_1m.csv",
+        "data/2025-02-10_BTC-USD_21d_1m.csv",
+        "data/2025-02-10_BTC-USD_14d_1m.csv",
+        "data/2025-02-10_BTC-USD_7d_1m.csv"
+    ]
+    dfs = [pd.read_csv(file, parse_dates=['Date']) for file in data_files]
+    df = pd.concat(dfs, ignore_index=True)
+    df = df.set_index("Date")
+    df.drop_duplicates(keep='first', inplace=True)
+    return df
 
-# Decide on ranges to use.
-export_data = []
-min_tolerance = 2
-max_tolerance = 10
+def plot_price(df):
+    # Resample the data to a daily frequency to make the plot cleaner
+    # df_resampled = df.resample('4h').mean()
 
-for range_mode in [RangeMode.EVEN]:  #, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH]:
+    # Plot the resampled data
+    # df_resampled.loc[:, "Price"].plot()
+    df.loc[:, "Price"].plot()
+    plt.title('Bitcoin Price Over Time')
+    plt.xlabel('Time (days)')
+    plt.ylabel('Price (USD)')
+    plt.xticks(rotation=45)  # Rotate x-axis labels for better readability
+    plt.tight_layout()  # Adjust layout to prevent clipping of labels
+    plt.show()
 
-    for r in range(min_tolerance, max_tolerance + 1):
+def plot_results(slices, result_df):
+    # Create the first plot with slices 1 and 2
+    fig1, axs1 = plt.subplots(2, 2, figsize=(15, 10))
+    axs1[0, 0].plot(slices[0].index, slices[0]['Price'], label='Slice 1')
+    axs1[0, 0].set_title('Slice 1 Price')
+    axs1[0, 0].set_xlabel('Date')
+    axs1[0, 0].set_ylabel('Price')
+    axs1[0, 0].legend()
 
-        if range_mode == RangeMode.EVEN:
-            high_pct = r
-            low_pct = r
-        elif range_mode == RangeMode.LTH:
-            high_pct = r
-            low_pct = high_pct - 2 if high_pct - 2 >= 2 else 2
-        elif range_mode == RangeMode.FIXL:
-            high_pct = r
-            low_pct = 2
-        elif range_mode == RangeMode.FIXH:
-            high_pct = 2
-            low_pct = r
+    axs1[0, 1].plot(slices[1].index, slices[1]['Price'], label='Slice 2')
+    axs1[0, 1].set_title('Slice 2 Price')
+    axs1[0, 1].set_xlabel('Date')
+    axs1[0, 1].set_ylabel('Price')
+    axs1[0, 1].legend()
 
+    # Filter results for slices 1 and 2
+    slice1_results = result_df[result_df['date_range'].str.contains(slices[0].index[0].strftime('%Y-%m-%d'))]
+    slice2_results = result_df[result_df['date_range'].str.contains(slices[1].index[0].strftime('%Y-%m-%d'))]
 
-        # Convert to ticks based on spacing
-        high_tick = int(high_pct * tick_spacing / 100)
-        low_tick = int(low_pct * tick_spacing / 100)
-        # fee_per_ut = fee_per_ut_per_tick / (high_tick + low_tick + 1)
-        # print(f"Fee per UT: ${fee_per_ut:.4f}")
+    # Plot gains for slice 1
+    slice1_false = slice1_results[slice1_results['geometric_mean_rebalance'] == False]
+    slice1_true = slice1_results[slice1_results['geometric_mean_rebalance'] == True]
+    axs1[1, 0].plot(slice1_false['range'], slice1_false['gains'], label='Geometric Mean Rebalance: False')
+    axs1[1, 0].plot(slice1_true['range'], slice1_true['gains'], label='Geometric Mean Rebalance: True')
+    axs1[1, 0].set_title('Slice 1 Gains')
+    axs1[1, 0].set_xlabel('Range')
+    axs1[1, 0].set_ylabel('Gains')
+    axs1[1, 0].legend()
 
-        il = None
-        gains = None
-        rebalance = True
-        time_to_rebalance = 10  # minutes out of range before a rebalance can occur
+    # Plot gains for slice 2
+    slice2_false = slice2_results[slice2_results['geometric_mean_rebalance'] == False]
+    slice2_true = slice2_results[slice2_results['geometric_mean_rebalance'] == True]
+    axs1[1, 1].plot(slice2_false['range'], slice2_false['gains'], label='Geometric Mean Rebalance: False')
+    axs1[1, 1].plot(slice2_true['range'], slice2_true['gains'], label='Geometric Mean Rebalance: True')
+    axs1[1, 1].set_title('Slice 2 Gains')
+    axs1[1, 1].set_xlabel('Range')
+    axs1[1, 1].set_ylabel('Gains')
+    axs1[1, 1].legend()
 
-        btc = hc.Token("BTC", latest_btc_price)
-        usdc = hc.Token("USDC", 1)
-        btc_usdc = hc.LiquidityPool(btc, usdc)
-        # Set type of re-balance
-        btc_usdc.gm_rebalance = False
-        btc_usdc.compound = False
-        btc_usdc.setup_new_position(seed, low_tick, high_tick)
-        rebal_ctr = 0
-        in_range_ctr = 0
-        time_to_rebal_ctr = 0
-        out_of_range_ctr = 0
-        for price in df["Price"]:
-            if not len(btc_usdc.price_range_tracker) == len(btc_usdc.tick_offset_tracker):
-                raise Exception("Tick Offset Tracker and Price Trackers have diverged")
-            btc.price = price
-            btc_usdc.update_token_balances(1/24/60, fee_per_ut_per_tick)
-            # Check to see if we are in or out of range
-            if btc_usdc.in_range:
-                in_range_ctr += 1
-                time_to_rebal_ctr = 0
-                # Check to see if a GM re-balance is needed
-                if btc_usdc.gm_return_range and rebalance:
-                    # Check if the price is back within the Geometric Mean return range
-                    if btc_usdc.gm_return_range[0] <= price <= btc_usdc.gm_return_range[1]:
-                        # Shrink the range
-                        low = btc_usdc.tick_offset_tracker[-2][0]
-                        high = btc_usdc.tick_offset_tracker[-2][1]
-                        # Remove the last two ranges from the trackers
-                        btc_usdc.tick_offset_tracker.pop()
-                        btc_usdc.tick_offset_tracker.pop()
-                        btc_usdc.price_range_tracker.pop()
-                        btc_usdc.price_range_tracker.pop()
-                        # Rebalance (This will add a range back)
-                        btc_usdc.rebalance(low, high)
-                        rebal_ctr += 1
-                        time_to_rebal_ctr = 0
-                    else:
-                        pass
-            else:
-                if not rebalance:
-                    out_of_range_ctr += 1
+    plt.tight_layout()
+    plt.show()
+
+    # Create the second plot with slices 3 and 4
+    fig2, axs2 = plt.subplots(2, 2, figsize=(15, 10))
+    axs2[0, 0].plot(slices[2].index, slices[2]['Price'], label='Slice 3')
+    axs2[0, 0].set_title('Slice 3 Price')
+    axs2[0, 0].set_xlabel('Date')
+    axs2[0, 0].set_ylabel('Price')
+    axs2[0, 0].legend()
+
+    axs2[0, 1].plot(slices[3].index, slices[3]['Price'], label='Slice 4')
+    axs2[0, 1].set_title('Slice 4 Price')
+    axs2[0, 1].set_xlabel('Date')
+    axs2[0, 1].set_ylabel('Price')
+    axs2[0, 1].legend()
+
+    # Filter results for slices 3 and 4
+    slice3_results = result_df[result_df['date_range'].str.contains(slices[2].index[0].strftime('%Y-%m-%d'))]
+    slice4_results = result_df[result_df['date_range'].str.contains(slices[3].index[0].strftime('%Y-%m-%d'))]
+
+    # Plot gains for slice 3
+    slice3_false = slice3_results[slice3_results['geometric_mean_rebalance'] == False]
+    slice3_true = slice3_results[slice3_results['geometric_mean_rebalance'] == True]
+    axs2[1, 0].plot(slice3_false['range'], slice3_false['gains'], label='Geometric Mean Rebalance: False')
+    axs2[1, 0].plot(slice3_true['range'], slice3_true['gains'], label='Geometric Mean Rebalance: True')
+    axs2[1, 0].set_title('Slice 3 Gains')
+    axs2[1, 0].set_xlabel('Range')
+    axs2[1, 0].set_ylabel('Gains')
+    axs2[1, 0].legend()
+
+    # Plot gains for slice 4
+    slice4_false = slice4_results[slice4_results['geometric_mean_rebalance'] == False]
+    slice4_true = slice4_results[slice4_results['geometric_mean_rebalance'] == True]
+    axs2[1, 1].plot(slice4_false['range'], slice4_false['gains'], label='Geometric Mean Rebalance: False')
+    axs2[1, 1].plot(slice4_true['range'], slice4_true['gains'], label='Geometric Mean Rebalance: True')
+    axs2[1, 1].set_title('Slice 4 Gains')
+    axs2[1, 1].set_xlabel('Range')
+    axs2[1, 1].set_ylabel('Gains')
+    axs2[1, 1].legend()
+
+    plt.tight_layout()
+    plt.show()
+
+def calculate_fee_per_ut_per_tick():
+    apr_per_tick = WEEKLY_REWARDS / TVL_REWARDED * 52 * 100
+    fee_per_ut_per_tick = apr_per_tick / 100 / 365 / 24 / 60 * SEED
+    print(f"Fee per UT, per liquidity tick: ${fee_per_ut_per_tick:.2f}\n")
+    return fee_per_ut_per_tick
+
+def simulate_range_mode(df, range_mode, fee_per_ut_per_tick, gm_rebalance):
+    result = {}
+    for r in range(MIN_TOLERANCE, MAX_TOLERANCE + 1):
+        high_pct, low_pct = get_high_low_pct(range_mode, r)
+        high_tick, low_tick = get_ticks(high_pct, low_pct)
+        result.update(simulate_range(df, high_tick, low_tick, fee_per_ut_per_tick, gm_rebalance))
+    return result
+
+def get_high_low_pct(range_mode, r):
+    if range_mode == RangeMode.EVEN:
+        high_pct = r
+        low_pct = r
+    elif range_mode == RangeMode.LTH:
+        high_pct = r
+        low_pct = high_pct - 2 if high_pct - 2 >= 2 else 2
+    elif range_mode == RangeMode.FIXL:
+        high_pct = r
+        low_pct = 2
+    elif range_mode == RangeMode.FIXH:
+        high_pct = 2
+        low_pct = r
+    return high_pct, low_pct
+
+def get_ticks(high_pct, low_pct):
+    high_tick = int(high_pct * TICK_SPACING / 100)
+    low_tick = int(low_pct * TICK_SPACING / 100)
+    return high_tick, low_tick
+
+def simulate_range(df, high_tick, low_tick, fee_per_ut_per_tick, gm_rebalance):
+    result = {}
+    result[f"+{high_tick}/-{low_tick}"] = {}
+    btc = hc.Token(TOKEN0, df.loc[:, "Price"].iloc[0])
+    usdc = hc.Token(TOKEN1, 1)
+    lp = hc.LiquidityPool(btc, usdc)
+    lp.gm_rebalance = gm_rebalance
+    lp.compound = False
+    lp.setup_new_position(SEED, low_tick, high_tick)
+    rebal_ctr = 0
+    in_range_ctr = 0
+    time_to_rebal_ctr = 0
+    out_of_range_ctr = 0
+    if gm_rebalance:
+        time_to_rebalance = 0  # minutes out of range before a rebalance can occur
+    else:
+        time_to_rebalance = 0  # minutes out of range before a rebalance can occur
+
+    for price in df["Price"]:
+        if not len(lp.price_range_tracker) == len(lp.tick_offset_tracker):
+            raise Exception("Tick Offset Tracker and Price Trackers have diverged")
+        btc.price = price
+        lp.update_token_balances(1/24/60, fee_per_ut_per_tick)
+        if lp.in_range:
+            in_range_ctr += 1
+            time_to_rebal_ctr = 0
+            if lp.gm_return_range:
+                if lp.gm_return_range[0] <= price <= lp.gm_return_range[1]:
+                    low = lp.tick_offset_tracker[-2][0]
+                    high = lp.tick_offset_tracker[-2][1]
+                    lp.tick_offset_tracker.pop()
+                    lp.tick_offset_tracker.pop()
+                    lp.price_range_tracker.pop()
+                    lp.price_range_tracker.pop()
+                    lp.rebalance(low, high)
+                    rebal_ctr += 1
+                    time_to_rebal_ctr = 0
+        else:
+            out_of_range_ctr += 1
+            time_to_rebal_ctr += 1
+            if time_to_rebal_ctr >= time_to_rebalance:
+                if lp.gm_rebalance:
+                    low1 = lp.tick_offset_tracker[0][0]
+                    high1 = lp.tick_offset_tracker[0][1]
+                    low2 = lp.tick_offset_tracker[-1][0]
+                    high2 = lp.tick_offset_tracker[-1][1]
+                    lp.rebalance(low1 + low2, high1 + high2)
+                    rebal_ctr += 1
+                    time_to_rebal_ctr = 0
                 else:
-                    out_of_range_ctr += 1
-                    time_to_rebal_ctr += 1
-                    # Check if it's time to rebalance
-                    if time_to_rebal_ctr >= time_to_rebalance:
-                        # Re-balance needed, check for GM or standard
-                        if btc_usdc.gm_rebalance:
-                            # Get the original and last ranges
-                            low1 = btc_usdc.tick_offset_tracker[0][0]
-                            high1 = btc_usdc.tick_offset_tracker[0][1]
-                            low2 = btc_usdc.tick_offset_tracker[-1][0]
-                            high2 = btc_usdc.tick_offset_tracker[-1][1]
-                            # Increase the range around the Geometric Mean
-                            btc_usdc.rebalance(low1 + low2, high1 + high2)
-                            rebal_ctr += 1
-                            time_to_rebal_ctr = 0
-                        else:
-                            # Standard Re-balance
-                            btc_usdc.rebalance(low_tick, high_tick)
-                            rebal_ctr += 1
-                            time_to_rebal_ctr = 0
-        btc_usdc.withdraw_fees_accrued()  # Harvest remaining fees
-        il = btc_usdc.impermanent_loss
-        gains = btc_usdc.impermanent_gain
-        loss = pd.Series(il)
-        print(f'Gain from Simulation of Range +{high_pct}/-{low_pct} is ${gains:.2f}')
-        print(f"In range: {in_range_ctr}, Rebalances: {rebal_ctr}, Out of Range: {out_of_range_ctr}")
-        print(f"Total Fees Collected: ${btc_usdc.total_fees:.2f} | Dust returned: ${btc_usdc.dust:.2f}")
-        days_run = len(df["Price"]) / 60 / 24
-        print(f"Average Fee APR: {btc_usdc.total_fees / btc_usdc.value * 100 * 365 / days_run:.1f}")
-        print(f"Original Seed: ${seed - btc_usdc.dust:.2f} | LP value plus fees: ${btc_usdc.value_plus_fees:.2f} | Hold Value ${btc_usdc.hold_value:.2f}\n")
-print(f"Simulation Ending Price: ${df.loc[:,  "Price"].iloc[-1]:.2f}")
+                    lp.rebalance(low_tick, high_tick)
+                    rebal_ctr += 1
+                    time_to_rebal_ctr = 0
 
+    lp.withdraw_fees_accrued()
+    gains = lp.impermanent_gain
+    print(lp.fetch_il_tracker())
+    print(f'Gain from Simulation of Range +{high_tick}/{low_tick} is ${gains:.2f}')
+    print(f"In range: {in_range_ctr}, Rebalances: {rebal_ctr}, Out of Range: {out_of_range_ctr}")
+    print(f"Total Fees Collected: ${lp.total_fees:.2f} | Dust returned: ${lp.dust:.2f}")
+    days_run = len(df["Price"]) / 60 / 24
+    print(f"Average Fee APR: {lp.total_fees / lp.value * 100 * 365 / days_run:.1f}")
+    print(f"Original Seed: ${SEED - lp.dust:.2f} | LP value plus fees: ${lp.value_plus_fees:.2f} | Hold Value ${lp.hold_value:.2f}\n")
+    # result[f"+{high_tick}/-{low_tick}"][gm_rebalance] = gains
+    return gains
 
+def main():
+    result_list = []
+    price_df = load_data()
+    plot_price(price_df)
+    latest_btc_price = price_df.loc[:, "Price"].iloc[0]
+    print(f"\nSimulation Starting Price: ${latest_btc_price:.2f}")
+    fee_per_ut_per_tick = calculate_fee_per_ut_per_tick()
 
+    # Split the DataFrame into 4 equal slices
+    num_slices = 4
+    slice_length = len(price_df) // num_slices
+    slices = [price_df.iloc[i*slice_length:(i+1)*slice_length] for i in range(num_slices)]
 
+    for range_mode in [RangeMode.EVEN]:  #, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH]:
+        for geo_mean_rebalance in [False, True]:
+            for r in range(MIN_TOLERANCE, MAX_TOLERANCE + 1):
+                high_pct, low_pct = get_high_low_pct(range_mode, r)
+                high_tick, low_tick = get_ticks(high_pct, low_pct)
+                slice_ctr = 0
+                for slice_df in slices:
+                    gains = simulate_range(slice_df, high_tick, low_tick, fee_per_ut_per_tick, geo_mean_rebalance)
+                    result_list.append({
+                        'date_slice': slice_ctr,
+                        'date_range': f"{slice_df.index[0]} -> {slice_df.index[-1]}",
+                        'geometric_mean_rebalance': geo_mean_rebalance,
+                        'range': f"+{high_tick}/-{low_tick}",
+                        'gains': gains
+                        })
+                    slice_ctr += 1
+    print(f"Simulation Ending Price: ${price_df.loc[:, "Price"].iloc[-1]:.2f}")
+    result_df = pd.DataFrame(result_list)
+    print(result_df)
+    result_df.to_csv("outputs/sim_result.csv")
+    plot_results(slices, result_df)
 
-
-        # todo: Bill's sim. Need to align dataframes to consolidate
-        # for label, sim in df.items():  # Each column is a simulation
-        #     # Set up LP
-        #     btc = hc.Token("BTC", latest_btc_price)
-        #     usdc = hc.Token("USDC", 1)
-        #     btc_usdc = hc.LiquidityPool(btc, usdc)
-        #     btc_usdc.gm_rebalance = False
-        #     btc_usdc.setup_new_position(seed, low_tick, high_tick)
-        #     for price in sim.iloc[1:].values:  # start after the first hour
-        #         btc.price = price
-        #         btc_usdc.update_token_balances(1/24)
-        #         if btc_usdc.in_range:
-        #             btc_usdc.fees_accrued += fee_per_ut * 0.982  # VFAT charges 1.8% fee on AERO rewards
-        #         elif rebalance:
-        #             btc_usdc.rebalance(low_tick, high_tick)
-        #         else:
-        #             pass
-        #     il.append(btc_usdc.impermanent_loss)
-        #     gains.append(btc_usdc.impermanent_gain)
-        # loss = pd.Series(il)
-        # loss.hist(bins=50)
-        # print(f"{range_mode} Report")
-        # print(f'Minimum Gain from Simulation of Range +{high_pct}/-{low_pct} is {min(gains)}')
-        # print(f'Mean Gain from Simulation of Range +{high_pct}/-{low_pct} is {np.mean(gains)}')
-        # print(f'Maximum Gain from Simulation of Range +{high_pct}/-{low_pct} is {max(gains)}')
+if __name__ == "__main__":
+    main()

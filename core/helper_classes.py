@@ -55,6 +55,7 @@ class LiquidityPool:
         self.tick_offset_tracker = []  # track the various ranges used for gm rebalancing
         self.price_range_tracker = []
         self.rebalance_target_tick = None
+        self.il_tracker = {}
     
     @property
     def value(self):
@@ -189,12 +190,19 @@ class LiquidityPool:
         optimal_ratio = result.x
         # Calculate the optimal balances and assign liquidity
         self.liquidity, value = self.calculate_liquidity_and_value(optimal_ratio, seed)
-        self.update_token_balances(0)  # need to align with ticks, not always even   
+        self.update_token_balances(0)  # need to align with ticks, not always even
         if not self.initial_setup:
+            self.il_tracker[self.duration] = self.impermanent_loss
             self.dust += seed - value  # add to dust
+
+    def fetch_il_tracker(self):
+        # Convert to a pandas series and take the delta of each
+        il_tracker = pd.Series(self.il_tracker)
+        il_tracker["Delta"] = il_tracker.diff()
+        return il_tracker
         
     def update_token_balances(self, duration, fee_per_ut_per_tick=0):
-        self.duration += duration  # add duration days
+        self.duration += duration  # add duration in Day units
         # Check to make sure not out of range.  If out, set the price to the boundary edge to calculate the token amount
         if self.native_price < self.range[0]:
             price = self.range[0]
