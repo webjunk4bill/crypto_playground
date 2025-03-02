@@ -7,17 +7,20 @@ import pandas as pd
 from datetime import datetime as dt
 from datetime import timedelta as td
 import matplotlib.pyplot as plt
-import pycoingecko
 from aenum import Enum
+import glob
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 
 # Constants
 TICK_SPACING = 100
-WEEKLY_REWARDS = 440000
+WEEKLY_REWARDS = 296375
 TVL_REWARDED = 2.1E6  # This can change quite a bit and determines how "concentrated" the pool is
+AVG_BINANCE_VOLUME = 21503974197 # Average weekly binance volume over the 7 day reward time period.  Can use this to scale rewards if desired
 SEED = 10000
 MIN_TOLERANCE = 2
-MAX_TOLERANCE = 3
-TOKEN0 = 'BTC'
+MAX_TOLERANCE = 20
+TOKEN0 = 'eth'
 TOKEN1 = 'USDC'
 
 class RangeMode(Enum):
@@ -27,114 +30,18 @@ class RangeMode(Enum):
     LTH = 'LTH'
     HTL = 'HTL'
 
-def load_data():
-    data_files = [
-        "data/2025-02-10_BTC-USD_28d_1m.csv",
-        "data/2025-02-10_BTC-USD_21d_1m.csv",
-        "data/2025-02-10_BTC-USD_14d_1m.csv",
-        "data/2025-02-10_BTC-USD_7d_1m.csv"
-    ]
-    dfs = [pd.read_csv(file, parse_dates=['Date']) for file in data_files]
-    df = pd.concat(dfs, ignore_index=True)
-    df = df.set_index("Date")
-    df.drop_duplicates(keep='first', inplace=True)
-    return df
-
 def plot_price(df):
     # Resample the data to a daily frequency to make the plot cleaner
     # df_resampled = df.resample('4h').mean()
 
     # Plot the resampled data
-    # df_resampled.loc[:, "Price"].plot()
-    df.loc[:, "Price"].plot()
+    # df_resampled.loc[:, "price"].plot()
+    df.loc[:, "price"].plot()
     plt.title('Bitcoin Price Over Time')
-    plt.xlabel('Time (days)')
+    plt.xlabel('Date')
     plt.ylabel('Price (USD)')
     plt.xticks(rotation=45)  # Rotate x-axis labels for better readability
     plt.tight_layout()  # Adjust layout to prevent clipping of labels
-    plt.show()
-
-def plot_results(slices, result_df):
-    # Create the first plot with slices 1 and 2
-    fig1, axs1 = plt.subplots(2, 2, figsize=(15, 10))
-    axs1[0, 0].plot(slices[0].index, slices[0]['Price'], label='Slice 1')
-    axs1[0, 0].set_title('Slice 1 Price')
-    axs1[0, 0].set_xlabel('Date')
-    axs1[0, 0].set_ylabel('Price')
-    axs1[0, 0].legend()
-
-    axs1[0, 1].plot(slices[1].index, slices[1]['Price'], label='Slice 2')
-    axs1[0, 1].set_title('Slice 2 Price')
-    axs1[0, 1].set_xlabel('Date')
-    axs1[0, 1].set_ylabel('Price')
-    axs1[0, 1].legend()
-
-    # Filter results for slices 1 and 2
-    slice1_results = result_df[result_df['date_range'].str.contains(slices[0].index[0].strftime('%Y-%m-%d'))]
-    slice2_results = result_df[result_df['date_range'].str.contains(slices[1].index[0].strftime('%Y-%m-%d'))]
-
-    # Plot gains for slice 1
-    slice1_false = slice1_results[slice1_results['geometric_mean_rebalance'] == False]
-    slice1_true = slice1_results[slice1_results['geometric_mean_rebalance'] == True]
-    axs1[1, 0].plot(slice1_false['range'], slice1_false['gains'], label='Geometric Mean Rebalance: False')
-    axs1[1, 0].plot(slice1_true['range'], slice1_true['gains'], label='Geometric Mean Rebalance: True')
-    axs1[1, 0].set_title('Slice 1 Gains')
-    axs1[1, 0].set_xlabel('Range')
-    axs1[1, 0].set_ylabel('Gains')
-    axs1[1, 0].legend()
-
-    # Plot gains for slice 2
-    slice2_false = slice2_results[slice2_results['geometric_mean_rebalance'] == False]
-    slice2_true = slice2_results[slice2_results['geometric_mean_rebalance'] == True]
-    axs1[1, 1].plot(slice2_false['range'], slice2_false['gains'], label='Geometric Mean Rebalance: False')
-    axs1[1, 1].plot(slice2_true['range'], slice2_true['gains'], label='Geometric Mean Rebalance: True')
-    axs1[1, 1].set_title('Slice 2 Gains')
-    axs1[1, 1].set_xlabel('Range')
-    axs1[1, 1].set_ylabel('Gains')
-    axs1[1, 1].legend()
-
-    plt.tight_layout()
-    plt.show()
-
-    # Create the second plot with slices 3 and 4
-    fig2, axs2 = plt.subplots(2, 2, figsize=(15, 10))
-    axs2[0, 0].plot(slices[2].index, slices[2]['Price'], label='Slice 3')
-    axs2[0, 0].set_title('Slice 3 Price')
-    axs2[0, 0].set_xlabel('Date')
-    axs2[0, 0].set_ylabel('Price')
-    axs2[0, 0].legend()
-
-    axs2[0, 1].plot(slices[3].index, slices[3]['Price'], label='Slice 4')
-    axs2[0, 1].set_title('Slice 4 Price')
-    axs2[0, 1].set_xlabel('Date')
-    axs2[0, 1].set_ylabel('Price')
-    axs2[0, 1].legend()
-
-    # Filter results for slices 3 and 4
-    slice3_results = result_df[result_df['date_range'].str.contains(slices[2].index[0].strftime('%Y-%m-%d'))]
-    slice4_results = result_df[result_df['date_range'].str.contains(slices[3].index[0].strftime('%Y-%m-%d'))]
-
-    # Plot gains for slice 3
-    slice3_false = slice3_results[slice3_results['geometric_mean_rebalance'] == False]
-    slice3_true = slice3_results[slice3_results['geometric_mean_rebalance'] == True]
-    axs2[1, 0].plot(slice3_false['range'], slice3_false['gains'], label='Geometric Mean Rebalance: False')
-    axs2[1, 0].plot(slice3_true['range'], slice3_true['gains'], label='Geometric Mean Rebalance: True')
-    axs2[1, 0].set_title('Slice 3 Gains')
-    axs2[1, 0].set_xlabel('Range')
-    axs2[1, 0].set_ylabel('Gains')
-    axs2[1, 0].legend()
-
-    # Plot gains for slice 4
-    slice4_false = slice4_results[slice4_results['geometric_mean_rebalance'] == False]
-    slice4_true = slice4_results[slice4_results['geometric_mean_rebalance'] == True]
-    axs2[1, 1].plot(slice4_false['range'], slice4_false['gains'], label='Geometric Mean Rebalance: False')
-    axs2[1, 1].plot(slice4_true['range'], slice4_true['gains'], label='Geometric Mean Rebalance: True')
-    axs2[1, 1].set_title('Slice 4 Gains')
-    axs2[1, 1].set_xlabel('Range')
-    axs2[1, 1].set_ylabel('Gains')
-    axs2[1, 1].legend()
-
-    plt.tight_layout()
     plt.show()
 
 def calculate_fee_per_ut_per_tick():
@@ -174,7 +81,7 @@ def get_ticks(high_pct, low_pct):
 def simulate_range(df, high_tick, low_tick, fee_per_ut_per_tick, gm_rebalance):
     result = {}
     result[f"+{high_tick}/-{low_tick}"] = {}
-    btc = hc.Token(TOKEN0, df.loc[:, "Price"].iloc[0])
+    btc = hc.Token(TOKEN0, df.loc[:, "price"].iloc[0])
     usdc = hc.Token(TOKEN1, 1)
     lp = hc.LiquidityPool(btc, usdc)
     lp.gm_rebalance = gm_rebalance
@@ -189,7 +96,7 @@ def simulate_range(df, high_tick, low_tick, fee_per_ut_per_tick, gm_rebalance):
     else:
         time_to_rebalance = 0  # minutes out of range before a rebalance can occur
 
-    for price in df["Price"]:
+    for price in df["price"]:
         if not len(lp.price_range_tracker) == len(lp.tick_offset_tracker):
             raise Exception("Tick Offset Tracker and Price Trackers have diverged")
         btc.price = price
@@ -227,50 +134,70 @@ def simulate_range(df, high_tick, low_tick, fee_per_ut_per_tick, gm_rebalance):
 
     lp.withdraw_fees_accrued()
     gains = lp.impermanent_gain
-    print(lp.fetch_il_tracker())
-    print(f'Gain from Simulation of Range +{high_tick}/{low_tick} is ${gains:.2f}')
-    print(f"In range: {in_range_ctr}, Rebalances: {rebal_ctr}, Out of Range: {out_of_range_ctr}")
-    print(f"Total Fees Collected: ${lp.total_fees:.2f} | Dust returned: ${lp.dust:.2f}")
-    days_run = len(df["Price"]) / 60 / 24
-    print(f"Average Fee APR: {lp.total_fees / lp.value * 100 * 365 / days_run:.1f}")
-    print(f"Original Seed: ${SEED - lp.dust:.2f} | LP value plus fees: ${lp.value_plus_fees:.2f} | Hold Value ${lp.hold_value:.2f}\n")
+    apr_required = lp.apr
+    #print(lp.fetch_il_tracker())
+    #print(f'Gain from Simulation of Range +{high_tick}/{low_tick} is ${gains:.2f}')
+    #print(f"In range: {in_range_ctr}, Rebalances: {rebal_ctr}, Out of Range: {out_of_range_ctr}")
+    #print(f"Total Fees Collected: ${lp.total_fees:.2f} | Dust returned: ${lp.dust:.2f}")
+    #days_run = len(df["price"]) / 60 / 24
+    #print(f"Average Fee APR: {lp.total_fees / lp.value * 100 * 365 / days_run:.1f}")
+    #print(f"Original Seed: ${SEED - lp.dust:.2f} | LP value plus fees: ${lp.value_plus_fees:.2f} | Hold Value ${lp.hold_value:.2f}\n")
     # result[f"+{high_tick}/-{low_tick}"][gm_rebalance] = gains
-    return gains
+    return gains, apr_required
+
+def process_range(price_df, range_mode, r, fee_per_ut_per_tick, csv_name):
+    high_pct, low_pct = get_high_low_pct(range_mode, r)
+    high_tick, low_tick = get_ticks(high_pct, low_pct)
+    gains, apr = simulate_range(price_df, high_tick, low_tick, fee_per_ut_per_tick, False)
+    result = {
+        'simulation': f"{csv_name}",
+        'gm_rebalance': False,
+        'range': f"+{high_tick}/-{low_tick}",
+        'gains': gains,
+        'apr_needed': apr
+        }
+    return result
 
 def main():
     result_list = []
-    price_df = load_data()
-    plot_price(price_df)
-    latest_btc_price = price_df.loc[:, "Price"].iloc[0]
-    print(f"\nSimulation Starting Price: ${latest_btc_price:.2f}")
-    fee_per_ut_per_tick = calculate_fee_per_ut_per_tick()
+    # Get a list of csv files from the directory
+    csvs = glob.glob(f"data/volatility_segments/{TOKEN0}*.csv")
+    # csvs = ["data/binance_eth_minute.csv"]
+    for csv in csvs:
+        csv_name = csv.split("/")[-1].split(".")[0]
+        price_df = pd.read_csv(csv, parse_dates=True, index_col='date')
+        #plot_price(price_df)
+        latest_price = price_df.loc[:, "price"].iloc[0]
+        print(f"\nSimulation Starting Price: ${latest_price:.2f}")
+        fee_per_ut_per_tick = calculate_fee_per_ut_per_tick()
 
-    # Split the DataFrame into 4 equal slices
-    num_slices = 4
-    slice_length = len(price_df) // num_slices
-    slices = [price_df.iloc[i*slice_length:(i+1)*slice_length] for i in range(num_slices)]
+        with ProcessPoolExecutor() as executor:
+            futures = []
+            for range_mode in [RangeMode.EVEN, RangeMode.FIXL, RangeMode.FIXH]:
+                for r in range(MIN_TOLERANCE, MAX_TOLERANCE + 1, 2):
+                    futures.append(executor.submit(process_range, price_df, range_mode, r, fee_per_ut_per_tick, csv_name))
+            for future in futures:
+                result = future.result()  # Ensure all tasks are completed
+                result_list.append(result)
 
-    for range_mode in [RangeMode.EVEN]:  #, RangeMode.LTH, RangeMode.FIXL, RangeMode.FIXH]:
-        for geo_mean_rebalance in [False, True]:
-            for r in range(MIN_TOLERANCE, MAX_TOLERANCE + 1):
-                high_pct, low_pct = get_high_low_pct(range_mode, r)
-                high_tick, low_tick = get_ticks(high_pct, low_pct)
-                slice_ctr = 0
-                for slice_df in slices:
-                    gains = simulate_range(slice_df, high_tick, low_tick, fee_per_ut_per_tick, geo_mean_rebalance)
-                    result_list.append({
-                        'date_slice': slice_ctr,
-                        'date_range': f"{slice_df.index[0]} -> {slice_df.index[-1]}",
-                        'geometric_mean_rebalance': geo_mean_rebalance,
-                        'range': f"+{high_tick}/-{low_tick}",
-                        'gains': gains
-                        })
-                    slice_ctr += 1
-    print(f"Simulation Ending Price: ${price_df.loc[:, "Price"].iloc[-1]:.2f}")
+        print(f"Simulation Ending Price: ${price_df.loc[:, 'price'].iloc[-1]:.2f}")
+
     result_df = pd.DataFrame(result_list)
-    print(result_df)
+    # drop duplicates of simulation and range
+    result_df = result_df.drop_duplicates(subset=['simulation', 'range'])
+    #print(result_df)
     result_df.to_csv("outputs/sim_result.csv")
-    plot_results(slices, result_df)
+    result_df['second_word'] = result_df['simulation'].str.split('_').str[1]
+
+    # Define the mapping dictionary
+    weighting = {'high': 1, 'med': 17.5, 'low': 33}
+
+    # Map the second word to the corresponding value and create a new column
+    result_df['weighting'] = result_df['second_word'].map(weighting)
+    result_df['weighted_gains'] = result_df['gains'] * result_df['weighting']
+    out_df = result_df.pivot_table(index='range', values=['weighted_gains'], aggfunc=['sum'])
+    out_df = out_df.sort_values([('sum', 'weighted_gains')], ascending=False)
+    print(out_df)
 
 if __name__ == "__main__":
     main()
