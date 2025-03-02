@@ -22,6 +22,14 @@ MIN_TOLERANCE = 2
 MAX_TOLERANCE = 20
 TOKEN0 = 'eth'
 TOKEN1 = 'USDC'
+MANUAL = True
+MANUAL_RANGES = [
+    [2, 20],
+    [2, 10],
+    [4, 4],
+    [2, 2],
+    [15, 15]
+]
 
 class RangeMode(Enum):
     EVEN = 'EVEN'
@@ -29,6 +37,7 @@ class RangeMode(Enum):
     FIXH = 'FIXH'
     LTH = 'LTH'
     HTL = 'HTL'
+    MANUAL = 'MANUAL'
 
 def plot_price(df):
     # Resample the data to a daily frequency to make the plot cleaner
@@ -146,7 +155,10 @@ def simulate_range(df, high_tick, low_tick, fee_per_ut_per_tick, gm_rebalance):
     return gains, apr_required
 
 def process_range(price_df, range_mode, r, fee_per_ut_per_tick, csv_name):
-    high_pct, low_pct = get_high_low_pct(range_mode, r)
+    if MANUAL:
+        low_pct, high_pct = r
+    else:
+        high_pct, low_pct = get_high_low_pct(range_mode, r)
     high_tick, low_tick = get_ticks(high_pct, low_pct)
     gains, apr = simulate_range(price_df, high_tick, low_tick, fee_per_ut_per_tick, False)
     result = {
@@ -173,9 +185,13 @@ def main():
 
         with ProcessPoolExecutor() as executor:
             futures = []
-            for range_mode in [RangeMode.EVEN, RangeMode.FIXL, RangeMode.FIXH]:
-                for r in range(MIN_TOLERANCE, MAX_TOLERANCE + 1, 2):
-                    futures.append(executor.submit(process_range, price_df, range_mode, r, fee_per_ut_per_tick, csv_name))
+            if MANUAL:
+                for r in MANUAL_RANGES:
+                    futures.append(executor.submit(process_range, price_df, RangeMode.MANUAL, r, fee_per_ut_per_tick, csv_name))
+            else:
+                for range_mode in [RangeMode.EVEN, RangeMode.FIXL, RangeMode.FIXH]:
+                    for r in range(MIN_TOLERANCE, MAX_TOLERANCE + 1, 2):
+                        futures.append(executor.submit(process_range, price_df, range_mode, r, fee_per_ut_per_tick, csv_name))
             for future in futures:
                 result = future.result()  # Ensure all tasks are completed
                 result_list.append(result)
