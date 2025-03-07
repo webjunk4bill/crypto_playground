@@ -93,13 +93,14 @@ class LiquidityPool:
     @property
     def impermanent_loss(self):
         """
-        Negative value means that holding the LP leads to "impermanent gains"
+        This is the relative value of the LP (NOT COUNTING FEES)  compared to what it would be if it were just held
         """
-        return self.hold_value - self.value_plus_fees
+        return self.hold_value - self.value
 
     @property
-    def impermanent_gain(self):
-        return -1 * self.impermanent_loss
+    def clp_gain(self):
+        """ This returns any gains of the LP plus fees relative to holding the token """
+        return self.value_plus_fees - self.hold_value
     
     @property
     def current_tick(self):

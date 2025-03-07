@@ -8,7 +8,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 # Constants
 TICK_SPACING = 100
-WEEKLY_REWARDS = 296375
+WEEKLY_REWARDS = 350000
 TVL_REWARDED = 2.1E6  # This can change quite a bit and determines how "concentrated" the pool is
 AVG_BINANCE_VOLUME = 21503974197 # Average weekly binance volume over the 7 day reward time period.  Can use this to scale rewards if desired
 SEED = 10000
@@ -19,10 +19,12 @@ TOKEN1 = 'USDC'
 MANUAL = True
 MANUAL_RANGES = [
     [2, 20],
-    [2, 10],
-    [4, 4],
+    [25, 25],
+    [20, 20],
+    [30, 30],
+    [5, 5],
     [2, 2],
-    [15, 15]
+    [5, 25]
 ]
 
 class RangeMode(Enum):
@@ -98,7 +100,7 @@ def simulate_range(df, high_tick, low_tick, fee_per_ut_per_tick, gm_rebalance):
     if gm_rebalance:
         time_to_rebalance = 0  # minutes out of range before a rebalance can occur
     else:
-        time_to_rebalance = 10  # minutes out of range before a rebalance can occur
+        time_to_rebalance = 30  # minutes out of range before a rebalance can occur
 
     print_ctr = 0 
     for price in df["price"]:
@@ -109,7 +111,7 @@ def simulate_range(df, high_tick, low_tick, fee_per_ut_per_tick, gm_rebalance):
             raise Exception("Tick Offset Tracker and Price Trackers have diverged")
         btc.price = price
         lp.update_token_balances(1/24/60, fee_per_ut_per_tick)
-        gain_v_time.append(lp.impermanent_gain)
+        gain_v_time.append(lp.clp_gain)
         if lp.in_range:
             in_range_ctr += 1
             time_to_rebal_ctr = 0
@@ -142,7 +144,7 @@ def simulate_range(df, high_tick, low_tick, fee_per_ut_per_tick, gm_rebalance):
                     time_to_rebal_ctr = 0
 
     lp.withdraw_fees_accrued()
-    gains = lp.impermanent_gain
+    gains = lp.clp_gain
     apr_required = lp.apr
     #print(lp.fetch_il_tracker())
     print(f'Gain from Simulation of Range +{high_tick}/{low_tick} is ${gains:.2f}')
@@ -214,6 +216,7 @@ def plot_lp_gains(df, title):
 def combine_and_plot(result_df, csvs):
     for csv in csvs:
         df = pd.read_csv(csv, parse_dates=True, index_col='date')
+        #df = df['2024-12-15':'2025-01-30']
         name = csv.split('/')[-1].split('.')[0]
         df = df['price']
         to_add = result_df.loc[result_df.loc[:, 'simulation'] == name].set_index('range').loc[:, 'gain_v_time']
@@ -231,6 +234,7 @@ def main():
     for csv in csvs:
         csv_name = csv.split("/")[-1].split(".")[0]
         price_df = pd.read_csv(csv, parse_dates=True, index_col='date')
+        # price_df = price_df['2024-12-15':'2025-01-30']
         #plot_price(price_df)
         latest_price = price_df.loc[:, "price"].iloc[0]
         # print(f"\nSimulation Starting Price: ${latest_price:.2f}")

@@ -199,12 +199,20 @@ class SickleNFTcalculator:
                 else:
                     start_price = df[(df.eventType == "Deposit") & (df.tokenSymbol == token)].iloc[0].price
                     end_price = df[df.tokenSymbol == token].price.iloc[-1]
+            # Check to see if LP was completed and calculate final token swaps
+            tok_final = {}
+            if df['eventType'].isin(['Exit']).any():
+                for token in tokens:
+                    start_amount = df[(df.transactionType == "fund") & (df.tokenSymbol == token)].amount.sum()
+                    dust_removed = df[(df.transactionType == "dust") & (df.tokenSymbol == token)].amount.sum()
+                    end_amount = df[(df.transactionType == "withdrawl") & (df.tokenSymbol == token)].amount.sum()
+                    final = start_amount + dust_removed + end_amount
+                    tok_final[token] = final
             hold_token = net_funding / start_price
             apr = total_fees / net_funding * 365 * 100 / (df.index.max() - df.index.min()).days
             token_gain = (end_price / start_price - 1) * 100
             # Need to get the last tokenID, sorted by timeStamp
             end_token_id = int(df.tokenID.iloc[-1])
-            lp = SickleLPTracker(end_token_id)
             perf[name] = {
                 "$net_funding": net_funding.round(2), 
                 "$total_fees": total_fees.round(2), 
@@ -212,11 +220,23 @@ class SickleNFTcalculator:
                 "%average_fee_apr": apr.round(1), 
                 "$start_price": start_price.round(2), 
                 "$end_price": end_price.round(2),
-                "%token_gain": token_gain.round(2)
+                "%token_gain": token_gain.round(2),
                 }
-            perf[name] = {**perf[name], **lp.balances}
-            perf[name]["Gain over full token hold"] = ((lp.value + total_fees) - hold_token * lp.volatile_price).round(2)
-            perf[name]["Gain over hold USD"] = (lp.value + total_fees - net_funding).round(2)
+            if df['eventType'].isin(['Exit']).any():
+                lp_out = {"Balances": "LP is Closed"}
+                final_val = df[df.transactionType == "withdrawl"]["valueUsd"].sum()
+                final_price = end_price
+                for key, value in tok_final.items():
+                    perf[name][f"Final Balance for {key}"] = value
+            else:
+                lp = SickleLPTracker(end_token_id)
+                lp_out = lp.balances
+                final_val = lp.value
+                final_price = lp.volatile_price
+            perf[name]["Gain over full token hold"] = ((final_val + total_fees) - hold_token * final_price).round(2)
+            perf[name]["Gain over hold USD"] = (final_val + total_fees - net_funding).round(2)
+            perf[name] = {**perf[name], **lp_out}
+
         self.lp_analysis = pd.DataFrame(perf)
         print(self.lp_analysis)
         self.lp_analysis.to_csv(f"outputs/{self.wal_shortname}_returns.csv")

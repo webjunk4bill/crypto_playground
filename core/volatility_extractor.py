@@ -59,12 +59,12 @@ def main():
     df = load_data()
     
     periods = {
-        'high_vol_up': extract_period(df, find_volatility_peaks(df, 0.98, 1.0), 14, True),
-        'high_vol_down': extract_period(df, find_volatility_peaks(df, 0.98, 1.0), 14, False),
-        'med_vol_up': extract_period(df, find_volatility_peaks(df, 0.4, 0.66), 14, True),
-        'med_vol_down': extract_period(df, find_volatility_peaks(df, 0.4, 0.66), 14, False),
-        'low_vol_up': extract_period(df, find_volatility_peaks(df, 0.0, 0.33), 14, True),
-        'low_vol_down': extract_period(df, find_volatility_peaks(df, 0.0, 0.33), 14, False)
+        'high_vol_up': extract_period(df, find_volatility_peaks(df, 0.98, 1.0), 60, True),
+        'high_vol_down': extract_period(df, find_volatility_peaks(df, 0.98, 1.0), 60, False),
+        'med_vol_up': extract_period(df, find_volatility_peaks(df, 0.4, 0.66), 60, True),
+        'med_vol_down': extract_period(df, find_volatility_peaks(df, 0.4, 0.66), 60, False),
+        'low_vol_up': extract_period(df, find_volatility_peaks(df, 0.0, 0.33), 60, True),
+        'low_vol_down': extract_period(df, find_volatility_peaks(df, 0.0, 0.33), 60, False)
     }
     
     for label, period in periods.items():
