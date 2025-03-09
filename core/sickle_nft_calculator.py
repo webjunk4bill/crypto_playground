@@ -205,7 +205,7 @@ class SickleNFTcalculator:
                 for token in tokens:
                     start_amount = df[(df.transactionType == "fund") & (df.tokenSymbol == token)].amount.sum()
                     dust_removed = df[(df.transactionType == "dust") & (df.tokenSymbol == token)].amount.sum()
-                    end_amount = df[(df.transactionType == "withdrawl") & (df.tokenSymbol == token)].amount.sum()
+                    end_amount = df[(df.transactionType == "withdraw") & (df.tokenSymbol == token)].amount.sum()
                     final = start_amount + dust_removed + end_amount
                     tok_final[token] = final
             hold_token = net_funding / start_price
@@ -224,7 +224,7 @@ class SickleNFTcalculator:
                 }
             if df['eventType'].isin(['Exit']).any():
                 lp_out = {"Balances": "LP is Closed"}
-                final_val = df[df.transactionType == "withdrawl"]["valueUsd"].sum()
+                final_val = df[df.transactionType == "withdraw"]["valueUsd"].sum()
                 final_price = end_price
                 for key, value in tok_final.items():
                     perf[name][f"Final Balance for {key}"] = value

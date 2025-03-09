@@ -48,8 +48,16 @@ class SickleNFTtracker:
         # Find the last block seen for each seriesID in the dataframe
         last_block_seen = []
         for seriesID in df_old['seriesID'].unique():
-            last_block_seen.append(df_old[df_old['seriesID'] == seriesID]['blockNumber'].iloc[-2])
+            # if the last block seen has an eventType of "Exit", then continue
+            if df_old[df_old['seriesID'] == seriesID]['eventType'].iloc[-1] == "Exit":
+                print(f"{seriesID} was closed, continuing...")
+                continue
+            last_block_seen.append(df_old[df_old['seriesID'] == seriesID]['blockNumber'].iloc[-1])
             print(f"Last block seen for seriesID {seriesID} is {last_block_seen[-1]}")  
+        if not last_block_seen:
+            print("No need to pull historical data")
+            self.df_old = df_old
+            return
         if self.end_block <  min(last_block_seen):
             print(f"extracting older data, keeping block pull from {self.start_block} to {self.end_block}")
         else:
@@ -203,6 +211,9 @@ class SickleNFTtracker:
         token_symbols = self.df_main['tokenSymbol'].unique()
         start = self.df_main.index.min()
         end = self.df_main.index.max()
+        # ensure start and end are at least 8 hours apart
+        if end - start < pd.Timedelta(hours=8):
+            start = start - pd.Timedelta(hours=8)
         prices = {}
         for symbol in token_symbols:
             try:
@@ -274,7 +285,7 @@ class SickleNFTtracker:
             df = pd.concat([self.df_old.copy(), self.df_main.copy()])
             df.loc[:, "blockNumber"] = df.loc[:, "blockNumber"].astype(int)
             df.sort_values(by=["seriesID", "blockNumber"], inplace=True)
-            df.drop_duplicates(inplace=True, keep="last")
+            df.drop_duplicates(subset=['seriesID', 'blockNumber', 'amount', 'tokenSymbol'], inplace=True, keep="last")
             # Any amount that is negative needs to have the eventType updated to Deposit
             df.loc[df["amount"] < 0, "eventType"] = "Deposit"
             print(f"Merged Block range: {df.loc[:,'blockNumber'].min()} to {df.loc[:,'blockNumber'].max()}")
