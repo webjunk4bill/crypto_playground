@@ -270,10 +270,11 @@ class SickleNFTtracker:
         """
         df = self.df_main
         df["transactionType"] = "dust"
-        df.loc[df["tokenSymbol"] == "AERO", "transactionType"] = "fee"
+        #df.loc[df["tokenSymbol"] == "AERO", "transactionType"] = "fee"
         df.loc[df["eventType"] == "Harvest", "transactionType"] = "fee"
         df.loc[df["eventType"].isin(["Deposit", "Increase"]), "transactionType"] = "fund"
         df.loc[df["eventType"] == "Exit", "transactionType"] = "withdraw"
+        df.loc[df["tokenSymbol"] == "AERO", "transactionType"] = "fee"
         self.df_main = df
         return
     

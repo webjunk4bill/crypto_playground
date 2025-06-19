@@ -18,13 +18,12 @@ TOKEN0 = 'btc'
 TOKEN1 = 'USDC'
 MANUAL = True
 MANUAL_RANGES = [
-    [2, 20],
-    [25, 25],
-    [20, 20],
-    [30, 30],
-    [5, 5],
-    [2, 2],
-    [5, 25]
+    [25, 25, 0],
+    [2, 2, 0],
+    [5, 25, 0],
+    [5, 25, -5],
+    [5, 25, -10],
+    
 ]
 
 class RangeMode(Enum):
@@ -83,7 +82,7 @@ def get_ticks(high_pct, low_pct):
     low_tick = int(low_pct * TICK_SPACING / 100)
     return high_tick, low_tick
 
-def simulate_range(df, high_tick, low_tick, fee_per_ut_per_tick, gm_rebalance):
+def simulate_range(df, high_tick, low_tick, buffer, fee_per_ut_per_tick, gm_rebalance):
     result = {}
     gain_v_time = []
     result[f"+{high_tick}/-{low_tick}"] = {}
@@ -92,7 +91,7 @@ def simulate_range(df, high_tick, low_tick, fee_per_ut_per_tick, gm_rebalance):
     lp = hc.LiquidityPool(btc, usdc)
     lp.gm_rebalance = gm_rebalance
     lp.compound = False
-    lp.setup_new_position(SEED, low_tick, high_tick)
+    lp.setup_new_position(SEED, low_tick, high_tick, buffer)
     rebal_ctr = 0
     in_range_ctr = 0
     time_to_rebal_ctr = 0
@@ -158,15 +157,16 @@ def simulate_range(df, high_tick, low_tick, fee_per_ut_per_tick, gm_rebalance):
 
 def process_range(price_df, range_mode, r, fee_per_ut_per_tick, csv_name):
     if MANUAL:
-        low_pct, high_pct = r
+        low_pct, high_pct, buffer = r
     else:
         high_pct, low_pct = get_high_low_pct(range_mode, r)
+        buffer = 0
     high_tick, low_tick = get_ticks(high_pct, low_pct)
-    gains, apr, gain_v_time = simulate_range(price_df, high_tick, low_tick, fee_per_ut_per_tick, False)
+    gains, apr, gain_v_time = simulate_range(price_df, high_tick, low_tick, buffer, fee_per_ut_per_tick, False)
     result = {
         'simulation': f"{csv_name}",
         # 'gm_rebalance': False,
-        'range': f"+{high_tick}/-{low_tick}",
+        'range': f"+{high_tick}/-{low_tick}/{buffer}",
         'gains': gains,
         'apr_needed': apr,
         'gain_v_time': gain_v_time
