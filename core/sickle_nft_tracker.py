@@ -18,12 +18,14 @@ class SickleNFTtracker:
             "0x2812d614": "Compound",
             "0xf5304377": "Deposit",
             "0x5ec5999e": "Harvest",
+            "0x1d06722b": "Harvest",  # Simple Harvest
             "0xe6fb317f": "Rebalance",  # Normally RebalanceFor
             "0xe5bacdd0": "Increase",
             "0x1c396db6": "Decrease",
             "0x28734381": "Exit",
             "0x659b91b1": "Rebalance",  # Normally Rebalance
-            "0x22451262": "Rebalance"   # Normally Move
+            "0x22451262": "Rebalance",   # Normally Move
+            "0xddff9470": "Deposit"
         }
         self.cgids = {
             'cbBTC': 'bitcoin',
@@ -116,6 +118,7 @@ class SickleNFTtracker:
         df = df[["blockNumber", "timeStamp", "hash", "from", "to", "tokenID"]]
         df["timeStamp"] = pd.to_datetime(pd.to_numeric(df["timeStamp"], errors='coerce'), unit='s')
         df["tokenID"] = df["tokenID"].astype(int)
+        df = df[df['tokenID'] != 0]  # Remove SPAM NFT transactions
         
         # Identify burns (to burn address) and mints (from address is zero address)
         burn_address = "0x0000000000000000000000000000000000000000"
