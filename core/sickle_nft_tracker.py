@@ -25,7 +25,8 @@ class SickleNFTtracker:
             "0x28734381": "Exit",
             "0x659b91b1": "Rebalance",  # Normally Rebalance
             "0x22451262": "Rebalance",   # Normally Move
-            "0xddff9470": "Deposit"
+            "0xddff9470": "Deposit",
+            "0x23717967": "Reblance"  # Normally Move
         }
         self.cgids = {
             'cbBTC': 'bitcoin',
