@@ -5,7 +5,7 @@ import os
 import core.helper_classes as hc
 
 class SickleNFTtracker:
-    def __init__(self, start_block, end_block=99999999, wallet_addr=private.wal_lp, sickle_contract=private.sickle_lp):
+    def __init__(self, start_block, end_block=99999999, wallet_addr=private.wal_lp, sickle_contract=private.sickle_lp, path_start="outputs"):
         self.start_block = start_block
         self.end_block = end_block
         self.wallet = wallet_addr.lower()
@@ -36,7 +36,7 @@ class SickleNFTtracker:
         }
         # topic id is needed to understand methods related to compound, harvest, etc.
         self.topic_id = "0xbf9d03ac543e8f596c6f4af5ab5e75f366a57d2d6c28d2ff9c024bd3f88e8771"
-        self.csv_path = f"outputs/{self.wal_shortname}_tracker.csv"
+        self.csv_path = f"{path_start}/{self.wal_shortname}_tracker.csv"
         self.df_main = None
         self.df_old = None
         self.token_prices = None
@@ -290,7 +290,7 @@ class SickleNFTtracker:
             df = pd.concat([self.df_old.copy(), self.df_main.copy()])
             df.loc[:, "blockNumber"] = df.loc[:, "blockNumber"].astype(int)
             df.sort_values(by=["seriesID", "blockNumber"], inplace=True)
-            df.drop_duplicates(subset=['seriesID', 'blockNumber', 'amount', 'tokenSymbol'], inplace=True, keep="last")
+            df.drop_duplicates(subset=['seriesID', 'blockNumber', 'amount', 'tokenSymbol'], inplace=True, keep="first")
             # Any amount that is negative needs to have the eventType updated to Deposit
             df.loc[df["amount"] < 0, "eventType"] = "Deposit"
             print(f"Merged Block range: {df.loc[:,'blockNumber'].min()} to {df.loc[:,'blockNumber'].max()}")
