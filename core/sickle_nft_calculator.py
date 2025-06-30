@@ -201,16 +201,13 @@ class SickleNFTcalculator:
                     end_price = df[df.tokenSymbol == token].price.iloc[-1]
             # Check to see if LP was completed and calculate final token swaps
             tok_final = {}
-            start_amount = df[(df.transactionType == "fund") & (df.tokenSymbol == token)].amount.sum()
-            dust_removed = df[(df.transactionType == "dust") & (df.tokenSymbol == token)].amount.sum()
             if df['eventType'].isin(['Exit']).any():
-                for token in tokens:  
+                for token in tokens:
+                    start_amount = df[(df.transactionType == "fund") & (df.tokenSymbol == token)].amount.sum()
+                    dust_removed = df[(df.transactionType == "dust") & (df.tokenSymbol == token)].amount.sum()
                     end_amount = df[(df.transactionType == "withdraw") & (df.tokenSymbol == token)].amount.sum()
                     final = start_amount + dust_removed + end_amount
                     tok_final[token] = final
-            else:
-                end_amount = None
-                final = None
             hold_token = net_funding / start_price
             apr = total_fees / net_funding * 365 * 100 / (df.index.max() - df.index.min()).days
             token_gain = (end_price / start_price - 1) * 100
