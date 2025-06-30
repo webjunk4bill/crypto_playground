@@ -55,7 +55,10 @@ class SickleNFTtracker:
             if df_old[df_old['seriesID'] == seriesID]['eventType'].iloc[-1] == "Exit":
                 print(f"{seriesID} was closed, continuing...")
                 continue
-            last_block_seen.append(df_old[df_old['seriesID'] == seriesID]['blockNumber'].iloc[-1])
+            last_block_seen.append(df_old[
+                (df_old["seriesID"] == seriesID) & 
+                (df_old["eventType"] != "Harvest")
+                ]["blockNumber"].max())
             print(f"Last block seen for seriesID {seriesID} is {last_block_seen[-1]}")  
         if not last_block_seen:
             print("No need to pull historical data")
@@ -118,7 +121,7 @@ class SickleNFTtracker:
         df = pd.DataFrame(nft_txns)
         df = df[["blockNumber", "timeStamp", "hash", "from", "to", "tokenID"]]
         df["timeStamp"] = pd.to_datetime(pd.to_numeric(df["timeStamp"], errors='coerce'), unit='s')
-        df["tokenID"] = df["tokenID"].astype(int)
+        df.loc[:, "tokenID"] = df["tokenID"].astype(int)
         df = df[df['tokenID'] != 0]  # Remove SPAM NFT transactions
         
         # Identify burns (to burn address) and mints (from address is zero address)
