@@ -5,7 +5,7 @@ import os
 import core.helper_classes as hc
 
 class SickleNFTtracker:
-    def __init__(self, start_block, end_block=99999999, wallet_addr=private.wal_lp, sickle_contract=private.sickle_lp):
+    def __init__(self, start_block, end_block=99999999, wallet_addr=private.wal_lp, sickle_contract=private.sickle_lp, path_start="outputs"):
         self.start_block = start_block
         self.end_block = end_block
         self.wallet = wallet_addr.lower()
@@ -18,12 +18,15 @@ class SickleNFTtracker:
             "0x2812d614": "Compound",
             "0xf5304377": "Deposit",
             "0x5ec5999e": "Harvest",
+            "0x1d06722b": "Harvest",  # Simple Harvest
             "0xe6fb317f": "Rebalance",  # Normally RebalanceFor
             "0xe5bacdd0": "Increase",
             "0x1c396db6": "Decrease",
             "0x28734381": "Exit",
             "0x659b91b1": "Rebalance",  # Normally Rebalance
-            "0x22451262": "Rebalance"   # Normally Move
+            "0x22451262": "Rebalance",   # Normally Move
+            "0xddff9470": "Deposit",
+            "0x23717967": "Reblance"  # Normally Move
         }
         self.cgids = {
             'cbBTC': 'bitcoin',
@@ -33,7 +36,7 @@ class SickleNFTtracker:
         }
         # topic id is needed to understand methods related to compound, harvest, etc.
         self.topic_id = "0xbf9d03ac543e8f596c6f4af5ab5e75f366a57d2d6c28d2ff9c024bd3f88e8771"
-        self.csv_path = f"outputs/{self.wal_shortname}_tracker.csv"
+        self.csv_path = f"{path_start}/{self.wal_shortname}_tracker.csv"
         self.df_main = None
         self.df_old = None
         self.token_prices = None
@@ -48,8 +51,19 @@ class SickleNFTtracker:
         # Find the last block seen for each seriesID in the dataframe
         last_block_seen = []
         for seriesID in df_old['seriesID'].unique():
-            last_block_seen.append(df_old[df_old['seriesID'] == seriesID]['blockNumber'].iloc[-2])
+            # if the last block seen has an eventType of "Exit", then continue
+            if df_old[df_old['seriesID'] == seriesID]['eventType'].iloc[-1] == "Exit":
+                print(f"{seriesID} was closed, continuing...")
+                continue
+            last_block_seen.append(df_old[
+                (df_old["seriesID"] == seriesID) & 
+                (df_old["eventType"] != "Harvest")
+                ]["blockNumber"].max())
             print(f"Last block seen for seriesID {seriesID} is {last_block_seen[-1]}")  
+        if not last_block_seen:
+            print("No need to pull historical data")
+            self.df_old = df_old
+            return
         if self.end_block <  min(last_block_seen):
             print(f"extracting older data, keeping block pull from {self.start_block} to {self.end_block}")
         else:
@@ -107,7 +121,8 @@ class SickleNFTtracker:
         df = pd.DataFrame(nft_txns)
         df = df[["blockNumber", "timeStamp", "hash", "from", "to", "tokenID"]]
         df["timeStamp"] = pd.to_datetime(pd.to_numeric(df["timeStamp"], errors='coerce'), unit='s')
-        df["tokenID"] = df["tokenID"].astype(int)
+        df.loc[:, "tokenID"] = df["tokenID"].astype(int)
+        df = df[df['tokenID'] != 0]  # Remove SPAM NFT transactions
         
         # Identify burns (to burn address) and mints (from address is zero address)
         burn_address = "0x0000000000000000000000000000000000000000"
@@ -203,6 +218,9 @@ class SickleNFTtracker:
         token_symbols = self.df_main['tokenSymbol'].unique()
         start = self.df_main.index.min()
         end = self.df_main.index.max()
+        # ensure start and end are at least 8 hours apart
+        if end - start < pd.Timedelta(hours=8):
+            start = start - pd.Timedelta(hours=8)
         prices = {}
         for symbol in token_symbols:
             try:
@@ -259,10 +277,11 @@ class SickleNFTtracker:
         """
         df = self.df_main
         df["transactionType"] = "dust"
-        df.loc[df["tokenSymbol"] == "AERO", "transactionType"] = "fee"
+        #df.loc[df["tokenSymbol"] == "AERO", "transactionType"] = "fee"
         df.loc[df["eventType"] == "Harvest", "transactionType"] = "fee"
         df.loc[df["eventType"].isin(["Deposit", "Increase"]), "transactionType"] = "fund"
         df.loc[df["eventType"] == "Exit", "transactionType"] = "withdraw"
+        df.loc[df["tokenSymbol"] == "AERO", "transactionType"] = "fee"
         self.df_main = df
         return
     
@@ -274,7 +293,7 @@ class SickleNFTtracker:
             df = pd.concat([self.df_old.copy(), self.df_main.copy()])
             df.loc[:, "blockNumber"] = df.loc[:, "blockNumber"].astype(int)
             df.sort_values(by=["seriesID", "blockNumber"], inplace=True)
-            df.drop_duplicates(inplace=True, keep="last")
+            df.drop_duplicates(subset=['seriesID', 'blockNumber', 'amount', 'tokenSymbol'], inplace=True, keep="first")
             # Any amount that is negative needs to have the eventType updated to Deposit
             df.loc[df["amount"] < 0, "eventType"] = "Deposit"
             print(f"Merged Block range: {df.loc[:,'blockNumber'].min()} to {df.loc[:,'blockNumber'].max()}")

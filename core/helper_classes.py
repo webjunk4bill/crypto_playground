@@ -56,6 +56,7 @@ class LiquidityPool:
         self.price_range_tracker = []
         self.rebalance_target_tick = None
         self.il_tracker = {}
+        self.upper_rebalance_tick = None
     
     @property
     def value(self):
@@ -128,8 +129,12 @@ class LiquidityPool:
         return [um.sqrtp_to_price(um.tick_to_sqrtp(self.lower_tick)), um.sqrtp_to_price(um.tick_to_sqrtp(self.upper_tick))]
     
     @property
+    def rebalance_range(self):
+        return [um.sqrtp_to_price(um.tick_to_sqrtp(self.lower_tick)), um.sqrtp_to_price(um.tick_to_sqrtp(self.upper_rebalance_tick))]
+    
+    @property
     def in_range(self):
-        if self.range[0] <= self.native_price <= self.range[1]:
+        if self.rebalance_range[0] <= self.native_price <= self.rebalance_range[1]:
             return True
         else:
             return False
@@ -149,9 +154,10 @@ class LiquidityPool:
         else:
             return None
         
-    def setup_new_position(self, seed, ticks_lower, ticks_higher):
+    def setup_new_position(self, seed, ticks_lower, ticks_higher, buffer=0):
         # Ticks are fixed based on the liquidity tick, not the current tick (could be in between)
         self.upper_tick = self.current_liq_tick + ticks_higher * self.tick_spacing
+        self.upper_rebalance_tick = self.current_liq_tick + (ticks_higher + buffer) * self.tick_spacing
         self.lower_tick = self.current_liq_tick - ticks_lower * self.tick_spacing
         self.gm_start_tick = self.current_liq_tick
         self.tick_offset_tracker.append([ticks_lower, ticks_higher])
@@ -217,12 +223,13 @@ class LiquidityPool:
         self.token_y.balance = um.calc_amount_y(self.liquidity, price, self.range[0])
         self.calc_apr_for_duration()
 
-    def rebalance(self, ticks_lower, ticks_higher):
+    def rebalance(self, ticks_lower, ticks_higher, buffer=0):
         if self.gm_rebalance:
             current_liq_tick = self.gm_start_tick
         else:
             current_liq_tick = self.current_liq_tick
         self.upper_tick = current_liq_tick + ticks_higher * self.tick_spacing
+        self.upper_rebalance_tick = current_liq_tick + (ticks_higher + buffer) * self.tick_spacing
         self.lower_tick = current_liq_tick - ticks_lower * self.tick_spacing
         self.tick_offset_tracker.append([ticks_lower, ticks_higher])
         self.price_range_tracker.append(self.range)

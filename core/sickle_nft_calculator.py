@@ -125,10 +125,10 @@ class SickleNFTcalculator:
     Class to read in the csv output from the tracker class and perform various
     and maipulations of the data
     """
-    def __init__(self, wallet_addr):
+    def __init__(self, wallet_addr, path_start="outputs"):
         self.wallet = wallet_addr.lower()
         self.wal_shortname = f"{self.wallet[2:6].lower()}-{self.wallet[-4:].lower()}"
-        self.csv_path = f"outputs/{self.wal_shortname}_tracker.csv"
+        self.csv_path = f"{path_start}/{self.wal_shortname}_tracker.csv"
         self.df = pd.read_csv(self.csv_path, parse_dates=["timeStamp"]).set_index("timeStamp")
         self.df_per_nft = self.get_each_nft_seriesID()
         
@@ -205,7 +205,7 @@ class SickleNFTcalculator:
                 for token in tokens:
                     start_amount = df[(df.transactionType == "fund") & (df.tokenSymbol == token)].amount.sum()
                     dust_removed = df[(df.transactionType == "dust") & (df.tokenSymbol == token)].amount.sum()
-                    end_amount = df[(df.transactionType == "withdrawl") & (df.tokenSymbol == token)].amount.sum()
+                    end_amount = df[(df.transactionType == "withdraw") & (df.tokenSymbol == token)].amount.sum()
                     final = start_amount + dust_removed + end_amount
                     tok_final[token] = final
             hold_token = net_funding / start_price
@@ -219,12 +219,12 @@ class SickleNFTcalculator:
                 "hold_tokens": hold_token, 
                 "%average_fee_apr": apr.round(1), 
                 "$start_price": start_price.round(2), 
-                "$end_price": end_price.round(2),
+                "$final_price_csv": end_price.round(2),
                 "%token_gain": token_gain.round(2),
                 }
             if df['eventType'].isin(['Exit']).any():
                 lp_out = {"Balances": "LP is Closed"}
-                final_val = df[df.transactionType == "withdrawl"]["valueUsd"].sum()
+                final_val = df[df.transactionType == "withdraw"]["valueUsd"].sum()
                 final_price = end_price
                 for key, value in tok_final.items():
                     perf[name][f"Final Balance for {key}"] = value
