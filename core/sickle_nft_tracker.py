@@ -138,7 +138,7 @@ class SickleNFTtracker:
         # Create new mapping for fresh deposits
         df_token = pd.DataFrame(token_txns)
         for _, row in df_token.iterrows():
-            if row["from"].lower() == private.wal_lp.lower():
+            if row["from"].lower() == self.wallet.lower():
                 tx_hash = row["hash"]
                 # Extract rows from df_token with the same hash value
                 subset = df_token[df_token["hash"] == tx_hash]
@@ -181,7 +181,7 @@ class SickleNFTtracker:
         df["timeStamp"] = pd.to_datetime(pd.to_numeric(df["timeStamp"], errors='coerce'), unit='s')
         df["value"] = (df["value"].astype(float) / (10 ** df["tokenDecimal"].astype(int))).round(7)  # Convert to standard token value and round to 5 decimal digits
         df.rename(columns={'value': 'amount'}, inplace=True)  # Track as amount instead of value
-        df.loc[df["from"].str.lower() == private.wal_lp.lower(), "amount"] *= -1  # Funds sent to contract/NFT are negative
+        df.loc[df["from"].str.lower() == self.wallet.lower(), "amount"] *= -1  # Funds sent to contract/NFT are negative
 
         # Filter only transactions where both 'from' and 'to' are in FILTER_ADDRESSES
         df = df[df["from"].isin(self.addr_filters) & df["to"].isin(self.addr_filters)]
