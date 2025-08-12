@@ -4,6 +4,7 @@ import json
 import private
 import unimath as um
 import time
+import numpy as np
 
 # Key Constants
 LP_FACTORY_CONTRACT = '0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A'
@@ -193,12 +194,71 @@ class SickleNFTcalculator:
             total_fees = df[df.transactionType == "fee"]["valueUsd"].sum()
             # Get Hold Value and tokens
             tokens = df[df.eventType == "Deposit"]["tokenSymbol"].unique()
+            start_price = None
+            end_price = None
+            price_map = {}
             for token in tokens:
                 if token == "USDC":
                     continue
                 else:
                     start_price = df[(df.eventType == "Deposit") & (df.tokenSymbol == token)].iloc[0].price
                     end_price = df[df.tokenSymbol == token].price.iloc[-1]
+                    price_map[token] = {
+                        "start": start_price,
+                        "end": end_price
+                    }
+
+            # --- Compute weighted hold tokens for non-USDC pairs ---
+            # Build start amounts (units) per token from initial funding; use all 'fund' rows for robustness
+            start_amounts_map = {}
+            for t in price_map.keys():
+                start_amounts_map[t] = float(
+                    df.loc[(df.transactionType == "fund") & (df.tokenSymbol == t), "amount"].sum()
+                )
+
+            # Start values in USD per token using start price and funded units
+            start_values_map = {}
+            for t, prices in price_map.items():
+                amt = start_amounts_map.get(t, 0.0)
+                start_values_map[t] = amt * float(prices["start"]) if amt is not None else 0.0
+
+            # If both tokens are non-USDC but we don't have amounts, fallback to equal weights
+            total_start_value = sum(start_values_map.values())
+            weights_map = {}
+            if len(price_map) >= 2 and total_start_value == 0:
+                # equal weights across available non-USDC tokens
+                equal_w = 1.0 / len(price_map)
+                for t in price_map.keys():
+                    weights_map[t] = equal_w
+            else:
+                for t, v in start_values_map.items():
+                    if len(price_map) >= 2:
+                        weights_map[t] = (v / total_start_value) if total_start_value > 0 else 0.0
+                    else:
+                        weights_map[t] = 1.0  # single volatile token case
+
+            # Compute hold token quantities per token using weights
+            hold_tokens_map = {}
+            for t, w in weights_map.items():
+                sp = float(price_map[t]["start"]) if t in price_map else start_price
+                alloc_usd = float(net_funding) * float(w)
+                hold_tokens_map[t] = (alloc_usd / sp) if sp != 0 else float("nan")
+
+            # End value of the hypothetical hold at current/end prices
+            hold_value_end = 0.0
+            for t, qty in hold_tokens_map.items():
+                ep = float(price_map[t]["end"]) if t in price_map else end_price
+                hold_value_end += qty * ep
+
+            # Blended token gain (%) based on starting USD weights
+            blended_multiplier = 0.0
+            for t, w in weights_map.items():
+                sp = float(price_map[t]["start"]) if t in price_map else start_price
+                ep = float(price_map[t]["end"]) if t in price_map else end_price
+                if sp != 0:
+                    blended_multiplier += w * (ep / sp)
+            token_gain = (blended_multiplier - 1.0) * 100.0 if blended_multiplier > 0 else float("nan")
+
             # Check to see if LP was completed and calculate final token swaps
             tok_final = {}
             if df['eventType'].isin(['Exit']).any():
@@ -208,20 +268,42 @@ class SickleNFTcalculator:
                     end_amount = df[(df.transactionType == "withdraw") & (df.tokenSymbol == token)].amount.sum()
                     final = start_amount + dust_removed + end_amount
                     tok_final[token] = final
-            hold_token = net_funding / start_price
+            # Determine USDC-only default if no non-USDC price data was found
+            if len(price_map) == 0:
+                start_price = 1.0
+                end_price = 1.0
+            elif start_price is None:
+                # Ensure legacy fields are populated from the first available non-USDC token
+                first = next(iter(price_map.values()))
+                start_price = float(first["start"])
+                end_price = float(first["end"])
+
+            # For backward-compatibility, expose single-token hold as a scalar; otherwise use per-token map
+            if len(price_map) <= 1:
+                hold_token = net_funding / start_price if start_price != 0 else float("nan")
+                # token_gain already set above for multi-token; compute here for single-token
+                token_gain = (end_price / start_price - 1) * 100 if start_price != 0 else float("nan")
+            else:
+                hold_token = None  # not meaningful when multiple tokens; see hold_tokens_by_asset
+
             apr = total_fees / net_funding * 365 * 100 / (df.index.max() - df.index.min()).days
-            token_gain = (end_price / start_price - 1) * 100
             # Need to get the last tokenID, sorted by timeStamp
             end_token_id = int(df.tokenID.iloc[-1])
             perf[name] = {
-                "$net_funding": net_funding.round(2), 
-                "$total_fees": total_fees.round(2), 
-                "hold_tokens": hold_token, 
-                "%average_fee_apr": apr.round(1), 
-                "$start_price": start_price.round(2), 
-                "$final_price_csv": end_price.round(2),
-                "%token_gain": token_gain.round(2),
-                }
+                "$net_funding": round(float(net_funding), 2),
+                "$total_fees": round(float(total_fees), 2),
+                "hold_tokens": hold_token,
+                "hold_tokens_by_asset": {k: round(v, 8) for k, v in hold_tokens_map.items()} if len(price_map) >= 1 else None,
+                "%average_fee_apr": round(apr, 1) if apr == apr else None,
+                "$start_price": round(float(start_price), 2),
+                "$final_price_csv": round(float(end_price), 2),
+                "%token_gain": round(token_gain, 2) if token_gain == token_gain else None,
+            }
+            # Merge in per-token price fields (e.g., $start_price_BTC, $final_price_csv_ETH)
+            for t, v in price_map.items():
+                perf[name][f"$start_price_{t}"] = round(float(v["start"]), 2)
+                perf[name][f"$final_price_csv_{t}"] = round(float(v["end"]), 2)
+
             if df['eventType'].isin(['Exit']).any():
                 lp_out = {"Balances": "LP is Closed"}
                 final_val = df[df.transactionType == "withdraw"]["valueUsd"].sum()
@@ -233,8 +315,9 @@ class SickleNFTcalculator:
                 lp_out = lp.balances
                 final_val = lp.value
                 final_price = lp.volatile_price
-            perf[name]["Gain over full token hold"] = ((final_val + total_fees) - hold_token * final_price).round(2)
-            perf[name]["Gain over hold USD"] = (final_val + total_fees - net_funding).round(2)
+            # Compare LP outcome to a hypothetical hold of the starting-weighted portfolio
+            perf[name]["Gain over full token hold"] = round((final_val + total_fees) - hold_value_end, 2)
+            perf[name]["Gain over hold USD"] = round(final_val + total_fees - net_funding, 2)
             perf[name] = {**perf[name], **lp_out}
 
         self.lp_analysis = pd.DataFrame(perf)
