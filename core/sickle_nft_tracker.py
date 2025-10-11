@@ -23,6 +23,7 @@ class SickleNFTtracker:
             "0xe5bacdd0": "Increase",
             "0x1c396db6": "Decrease",
             "0x28734381": "Exit",
+            "0x9b5c1ee5": "Exit",
             "0x659b91b1": "Rebalance",  # Normally Rebalance
             "0x22451262": "Rebalance",   # Normally Move
             "0xddff9470": "Deposit",
