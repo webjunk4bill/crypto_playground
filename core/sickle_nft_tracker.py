@@ -126,7 +126,8 @@ class SickleNFTtracker:
         all_transfers = []
         
         if is_nft:
-            # For NFTs, query ERC721 transfers
+            # For NFTs, query ERC721 transfers involving the address (same as Etherscan did)
+            # Etherscan's tokennfttx action returned all NFT transfers for the address, including mints
             params_list = [
                 {"fromAddress": address, "category": ["erc721"], "fromBlock": from_block, "toBlock": to_block, "withMetadata": True, "excludeZeroValue": False, "maxCount": "0x3e8"},
                 {"toAddress": address, "category": ["erc721"], "fromBlock": from_block, "toBlock": to_block, "withMetadata": True, "excludeZeroValue": False, "maxCount": "0x3e8"}
@@ -176,8 +177,12 @@ class SickleNFTtracker:
         for transfer in all_transfers:
             tx_hash = transfer.get('hash', '').lower()
             if is_nft:
+                # For NFTs, include from/to in key to distinguish mints from transfers
+                # (same hash + tokenID can have multiple transfers: mint, transfer to farm, etc.)
+                from_addr = transfer.get('from', '').lower()
+                to_addr = transfer.get('to', '').lower()
                 token_id = str(transfer.get('erc721TokenId') or transfer.get('tokenId', ''))
-                key = (tx_hash, token_id)
+                key = (tx_hash, from_addr, to_addr, token_id)
             else:
                 from_addr = transfer.get('from', '').lower()
                 to_addr = transfer.get('to', '').lower()
@@ -211,7 +216,7 @@ class SickleNFTtracker:
                     except:
                         pass
             
-            tx_hash = transfer.get('hash', '')
+            tx_hash = transfer.get('hash', '').lower()  # Normalize hash to lowercase for consistent merging
             from_addr = transfer.get('from', '').lower()
             to_addr = transfer.get('to', '').lower()
             
@@ -281,6 +286,8 @@ class SickleNFTtracker:
         Fetch all ERC20 transfers for a specific transaction hash.
         Used to get full transaction details for Deposit/Exit transactions.
         """
+        # Normalize hash to lowercase
+        tx_hash = tx_hash.lower() if isinstance(tx_hash, str) else tx_hash
         # Get the transaction to find its block number
         payload = {
             "jsonrpc": "2.0",
@@ -330,7 +337,7 @@ class SickleNFTtracker:
         transfers = result.get('transfers', [])
         
         # Filter to only transfers in this specific transaction
-        tx_transfers = [t for t in transfers if t.get('hash', '').lower() == tx_hash.lower()]
+        tx_transfers = [t for t in transfers if t.get('hash', '').lower() == tx_hash.lower()]  # tx_hash already normalized above
         
         # Convert to our format
         results = []
@@ -353,7 +360,7 @@ class SickleNFTtracker:
                     except:
                         pass
             
-            tx_hash_transfer = transfer.get('hash', '')
+            tx_hash_transfer = transfer.get('hash', '').lower()  # Normalize hash to lowercase
             from_addr = transfer.get('from', '').lower()
             to_addr = transfer.get('to', '').lower()
             
@@ -387,6 +394,8 @@ class SickleNFTtracker:
         Note: tokenID should come from NFT transfers, not from parsing transaction input.
         This method only extracts method name from input data.
         """
+        # Normalize hash to lowercase
+        tx_hash = tx_hash.lower() if isinstance(tx_hash, str) else tx_hash
         # Use Alchemy's eth_getTransactionByHash
         payload = {
             "jsonrpc": "2.0",
@@ -411,6 +420,7 @@ class SickleNFTtracker:
     def process_nft_transactions(self, nft_txns, token_txns):
         df = pd.DataFrame(nft_txns)
         df = df[["blockNumber", "timeStamp", "hash", "from", "to", "tokenID"]]
+        df["hash"] = df["hash"].str.lower()  # Normalize hash to lowercase
         df["timeStamp"] = pd.to_datetime(pd.to_numeric(df["timeStamp"], errors='coerce'), unit='s')
         df.loc[:, "tokenID"] = df["tokenID"].astype(int)
         df = df[df['tokenID'] != 0]  # Remove SPAM NFT transactions
@@ -477,8 +487,40 @@ class SickleNFTtracker:
         # Filter to only wallet<->contract transfers (user interactions - taxable events)
         df = df[df["from"].isin(self.addr_filters) & df["to"].isin(self.addr_filters)]
         
-        # Link token transfers to NFT burn and mint transactions
-        df = df.merge(self.nft_df[['hash', 'seriesID', 'eventType', 'tokenID']], on='hash', how='left')
+        # Normalize hashes to lowercase for consistent merging
+        df['hash'] = df['hash'].str.lower()
+        if self.nft_df is not None and len(self.nft_df) > 0:
+            self.nft_df['hash'] = self.nft_df['hash'].str.lower()
+            # Ensure required columns exist in nft_df
+            required_cols = ['hash', 'seriesID', 'eventType', 'tokenID']
+            available_cols = [col for col in required_cols if col in self.nft_df.columns]
+            if len(available_cols) == len(required_cols):
+                # Link token transfers to NFT burn and mint transactions
+                df = df.merge(self.nft_df[available_cols], on='hash', how='left')
+            else:
+                # If nft_df doesn't have required columns, initialize them
+                for col in ['seriesID', 'eventType', 'tokenID']:
+                    if col not in df.columns:
+                        df[col] = pd.NA
+        else:
+            # If nft_df is empty, initialize the columns
+            for col in ['seriesID', 'eventType', 'tokenID']:
+                if col not in df.columns:
+                    df[col] = pd.NA
+        
+        # For rows still missing seriesID/tokenID, try to get them from nft_df by hash
+        # (This handles cases where the merge didn't find a match)
+        missing_mask = df['seriesID'].isna() | df['tokenID'].isna()
+        if missing_mask.any():
+            # Create a lookup from nft_df: hash -> (seriesID, tokenID)
+            nft_lookup = self.nft_df.set_index('hash')[['seriesID', 'tokenID']].to_dict('index')
+            for idx in df[missing_mask].index:
+                tx_hash = df.loc[idx, 'hash']
+                if tx_hash in nft_lookup:
+                    if pd.isna(df.loc[idx, 'seriesID']):
+                        df.loc[idx, 'seriesID'] = nft_lookup[tx_hash]['seriesID']
+                    if pd.isna(df.loc[idx, 'tokenID']):
+                        df.loc[idx, 'tokenID'] = nft_lookup[tx_hash]['tokenID']
         
         # Get a list of hashes that don't have an event type yet
         tx_hashes = df[pd.isna(df["eventType"])]["hash"].unique()
@@ -528,16 +570,33 @@ class SickleNFTtracker:
                         weth_row['from'] = self.wallet
                         weth_row['to'] = self.sickle
                         weth_row['amount'] = -abs(weth_row['amount'])  # Negative for deposit
-                        # Get eventType and other fields from df
+                        # Get eventType and other fields from df or nft_df
                         matching_rows = df[df['hash'] == tx_hash]
                         if len(matching_rows) > 0:
-                            weth_row['eventType'] = matching_rows['eventType'].iloc[0]
-                            weth_row['seriesID'] = matching_rows['seriesID'].iloc[0] if 'seriesID' in matching_rows.columns else pd.NA
-                            weth_row['tokenID'] = matching_rows['tokenID'].iloc[0] if 'tokenID' in matching_rows.columns else pd.NA
+                            weth_row['eventType'] = matching_rows['eventType'].iloc[0] if not pd.isna(matching_rows['eventType'].iloc[0]) else 'Deposit'
+                            # Try to get seriesID/tokenID from matching rows first
+                            if 'seriesID' in matching_rows.columns and not pd.isna(matching_rows['seriesID'].iloc[0]):
+                                weth_row['seriesID'] = matching_rows['seriesID'].iloc[0]
+                            if 'tokenID' in matching_rows.columns and not pd.isna(matching_rows['tokenID'].iloc[0]):
+                                weth_row['tokenID'] = matching_rows['tokenID'].iloc[0]
                         else:
                             weth_row['eventType'] = 'Deposit'
-                            weth_row['seriesID'] = pd.NA
-                            weth_row['tokenID'] = pd.NA
+                        
+                        # If still missing seriesID/tokenID, look up from nft_df
+                        has_series_id = 'seriesID' in weth_row and not pd.isna(weth_row['seriesID'])
+                        has_token_id = 'tokenID' in weth_row and not pd.isna(weth_row['tokenID'])
+                        if not has_series_id or not has_token_id:
+                            nft_match = self.nft_df[self.nft_df['hash'] == tx_hash]
+                            if len(nft_match) > 0:
+                                if not has_series_id:
+                                    weth_row['seriesID'] = nft_match['seriesID'].iloc[0]
+                                if not has_token_id:
+                                    weth_row['tokenID'] = nft_match['tokenID'].iloc[0]
+                            else:
+                                if not has_series_id:
+                                    weth_row['seriesID'] = pd.NA
+                                if not has_token_id:
+                                    weth_row['tokenID'] = pd.NA
                         weth_to_add.append(weth_row)
         
         if len(exit_hashes) > 0:
@@ -569,16 +628,33 @@ class SickleNFTtracker:
                         # Missing WETH return - add it as contract->wallet (positive amount for exit)
                         weth_row = contract_to_wallet_weth.iloc[0].copy()
                         weth_row['amount'] = abs(weth_row['amount'])  # Positive for exit/withdrawal
-                        # Get eventType and other fields from df
+                        # Get eventType and other fields from df or nft_df
                         matching_rows = df[df['hash'] == tx_hash]
                         if len(matching_rows) > 0:
-                            weth_row['eventType'] = matching_rows['eventType'].iloc[0]
-                            weth_row['seriesID'] = matching_rows['seriesID'].iloc[0] if 'seriesID' in matching_rows.columns else pd.NA
-                            weth_row['tokenID'] = matching_rows['tokenID'].iloc[0] if 'tokenID' in matching_rows.columns else pd.NA
+                            weth_row['eventType'] = matching_rows['eventType'].iloc[0] if not pd.isna(matching_rows['eventType'].iloc[0]) else 'Exit'
+                            # Try to get seriesID/tokenID from matching rows first
+                            if 'seriesID' in matching_rows.columns and not pd.isna(matching_rows['seriesID'].iloc[0]):
+                                weth_row['seriesID'] = matching_rows['seriesID'].iloc[0]
+                            if 'tokenID' in matching_rows.columns and not pd.isna(matching_rows['tokenID'].iloc[0]):
+                                weth_row['tokenID'] = matching_rows['tokenID'].iloc[0]
                         else:
                             weth_row['eventType'] = 'Exit'
-                            weth_row['seriesID'] = pd.NA
-                            weth_row['tokenID'] = pd.NA
+                        
+                        # If still missing seriesID/tokenID, look up from nft_df
+                        has_series_id = 'seriesID' in weth_row and not pd.isna(weth_row['seriesID'])
+                        has_token_id = 'tokenID' in weth_row and not pd.isna(weth_row['tokenID'])
+                        if not has_series_id or not has_token_id:
+                            nft_match = self.nft_df[self.nft_df['hash'] == tx_hash]
+                            if len(nft_match) > 0:
+                                if not has_series_id:
+                                    weth_row['seriesID'] = nft_match['seriesID'].iloc[0]
+                                if not has_token_id:
+                                    weth_row['tokenID'] = nft_match['tokenID'].iloc[0]
+                            else:
+                                if not has_series_id:
+                                    weth_row['seriesID'] = pd.NA
+                                if not has_token_id:
+                                    weth_row['tokenID'] = pd.NA
                         weth_to_add.append(weth_row)
         
         # Add missing WETH transfers
@@ -586,14 +662,26 @@ class SickleNFTtracker:
             df_weth = pd.DataFrame(weth_to_add)
             df = pd.concat([df, df_weth], ignore_index=True)
         
+        # Final pass: Fill any remaining missing seriesID/tokenID from nft_df by hash
+        missing_mask = df['seriesID'].isna() | df['tokenID'].isna()
+        if missing_mask.any():
+            nft_lookup = self.nft_df.set_index('hash')[['seriesID', 'tokenID']].to_dict('index')
+            for idx in df[missing_mask].index:
+                tx_hash = df.loc[idx, 'hash']
+                if tx_hash in nft_lookup:
+                    if pd.isna(df.loc[idx, 'seriesID']):
+                        df.loc[idx, 'seriesID'] = nft_lookup[tx_hash]['seriesID']
+                    if pd.isna(df.loc[idx, 'tokenID']):
+                        df.loc[idx, 'tokenID'] = nft_lookup[tx_hash]['tokenID']
+        
         # TokenID should already be populated from the NFT transfers merge above
         # Just ensure it's the right type
         if "tokenID" in df.columns:
             # Convert to int64 where possible
             df["tokenID"] = pd.to_numeric(df["tokenID"], errors='coerce').astype('Int64')
 
-        # Fill missing seriesID using tokenID mapping
-        df.loc[df["seriesID"].isna(), "seriesID"] = df["tokenID"].map(self.series_map)
+        # Fill missing seriesID using tokenID mapping (for cases where tokenID exists but seriesID doesn't)
+        df.loc[df["seriesID"].isna() & df["tokenID"].notna(), "seriesID"] = df.loc[df["seriesID"].isna() & df["tokenID"].notna(), "tokenID"].map(self.series_map)
 
         df.sort_values(by=["seriesID", "timeStamp"], inplace=True)
         self.df_token = df
