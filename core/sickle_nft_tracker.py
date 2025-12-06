@@ -391,8 +391,9 @@ class SickleNFTtracker:
         """
         Fetches the details of a single transaction.  This is needed to get the method ID that was
         used in the transaction.  Returns the method name and tokenID.
-        Note: tokenID should come from NFT transfers, not from parsing transaction input.
-        This method only extracts method name from input data.
+        For transactions with NFT transfers (Deposit, Exit), tokenID comes from NFT transfers.
+        For transactions without NFT transfers (Harvest, Compound, Rebalance), tokenID is extracted
+        from transaction input data.
         """
         # Normalize hash to lowercase
         tx_hash = tx_hash.lower() if isinstance(tx_hash, str) else tx_hash
@@ -412,8 +413,20 @@ class SickleNFTtracker:
             method_id = data["result"]["input"][:10]  # First 10 chars are the method ID
             method_name = self.method_id_map.get(method_id.lower(), "Unknown")
             print(f"{method_name} occured at tx {tx_hash[:6]}...{tx_hash[-4:]}")
-            # Don't try to extract tokenID from input - it's unreliable and position varies by method
-            # TokenID should come from NFT transfers instead
+            
+            # Extract tokenID from input for methods where NFT already exists (Harvest, Compound, Rebalance)
+            # This is needed because these transactions don't have NFT transfers
+            # Position: after method_id (10 chars) + 3 params (64 chars each) = 64 * 3 + 10
+            try:
+                token_id_pos = 64 * 3 + 10
+                input_data = data["result"]["input"]
+                if len(input_data) >= token_id_pos + 64:
+                    token_id_hex = input_data[token_id_pos:token_id_pos + 64]
+                    token_id = int(token_id_hex, 16)
+                    return method_name, token_id
+            except (ValueError, IndexError):
+                pass
+            
             return method_name, 0
         return "Unknown", 0
     
@@ -524,14 +537,22 @@ class SickleNFTtracker:
         
         # Get a list of hashes that don't have an event type yet
         tx_hashes = df[pd.isna(df["eventType"])]["hash"].unique()
-        # Fetch the event type for each hash (tokenID should already be from NFT transfers)
+        # Fetch the event type and tokenID for each hash
+        # For transactions without NFT transfers (Harvest, Compound, Rebalance), tokenID comes from transaction input
         event_types = {}
+        token_ids = {}
         for hash in tx_hashes:
-            event_type, _ = self.fetch_transaction_details(hash)
+            event_type, token_id = self.fetch_transaction_details(hash)
             event_types[hash] = event_type
+            token_ids[hash] = token_id
 
-        # Apply the event type to the data frame by matching the hash value
+        # Apply the event type and tokenID to the data frame by matching the hash value
+        # (Original logic: apply tokenID from input to all matching hashes)
         df.loc[df["hash"].isin(event_types.keys()), "eventType"] = df["hash"].map(event_types)
+        df.loc[df["hash"].isin(token_ids.keys()), "tokenID"] = df["hash"].map(token_ids)
+        # Convert tokenID to int (original logic - matches original Etherscan code)
+        if "tokenID" in df.columns:
+            df["tokenID"] = pd.to_numeric(df["tokenID"], errors='coerce').fillna(0).astype(int)
         
         # Targeted fix: For Deposit and Exit transactions ONLY, fetch full transaction details
         # to check for missing WETH transfers
@@ -674,14 +695,8 @@ class SickleNFTtracker:
                     if pd.isna(df.loc[idx, 'tokenID']):
                         df.loc[idx, 'tokenID'] = nft_lookup[tx_hash]['tokenID']
         
-        # TokenID should already be populated from the NFT transfers merge above
-        # Just ensure it's the right type
-        if "tokenID" in df.columns:
-            # Convert to int64 where possible
-            df["tokenID"] = pd.to_numeric(df["tokenID"], errors='coerce').astype('Int64')
-
-        # Fill missing seriesID using tokenID mapping (for cases where tokenID exists but seriesID doesn't)
-        df.loc[df["seriesID"].isna() & df["tokenID"].notna(), "seriesID"] = df.loc[df["seriesID"].isna() & df["tokenID"].notna(), "tokenID"].map(self.series_map)
+        # Fill missing seriesID using tokenID mapping (original logic)
+        df.loc[df["seriesID"].isna(), "seriesID"] = df["tokenID"].map(self.series_map)
 
         df.sort_values(by=["seriesID", "timeStamp"], inplace=True)
         self.df_token = df
