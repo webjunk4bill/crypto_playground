@@ -17,6 +17,7 @@ class SickleNFTtracker:
         self.method_id_map = {
             "0x2812d614": "Compound",
             "0xf5304377": "Deposit",
+            "0xee72c09a": "Deposit",
             "0x5ec5999e": "Harvest",
             "0x1d06722b": "Harvest",  # Simple Harvest
             "0xe6fb317f": "Rebalance",  # Normally RebalanceFor
