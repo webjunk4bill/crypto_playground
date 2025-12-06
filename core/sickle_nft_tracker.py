@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 import os
 import core.helper_classes as hc
+import json
 
 class SickleNFTtracker:
     def __init__(self, start_block, end_block=99999999, wallet_addr=private.wal_lp, sickle_contract=private.sickle_lp, path_start="outputs"):
@@ -12,8 +13,10 @@ class SickleNFTtracker:
         self.wal_shortname = f"{self.wallet[2:6].lower()}-{self.wallet[-4:].lower()}"
         self.sickle = sickle_contract.lower()
         self.addr_filters = [self.wallet, self.sickle]
-        self.base_url = 'https://api.etherscan.io/v2/api'
-        self.api_key = private.etherscan_api
+        # Use Alchemy instead of Etherscan
+        self.alchemy_url = private.alchemy_base_url
+        # Cache for token info
+        self._token_info_cache = {}
         self.method_id_map = {
             "0x2812d614": "Compound",
             "0xf5304377": "Deposit",
@@ -74,51 +77,336 @@ class SickleNFTtracker:
             self.start_block = min(last_block_seen) - 1
         self.df_old = df_old
     
+    def _get_token_info(self, token_address):
+        """Get token symbol and decimals using Alchemy Token API, with caching"""
+        token_address_lower = token_address.lower()
+        if token_address_lower in self._token_info_cache:
+            return self._token_info_cache[token_address_lower]
+        
+        try:
+            # Use Alchemy's Token API instead of contract calls
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "alchemy_getTokenMetadata",
+                "params": [token_address]
+            }
+            
+            response = requests.post(self.alchemy_url, json=payload, headers={"Content-Type": "application/json"})
+            response.raise_for_status()
+            data = response.json()
+            
+            if "result" in data and data["result"]:
+                result = data["result"]
+                info = {
+                    'symbol': result.get('symbol', 'UNKNOWN'),
+                    'decimals': result.get('decimals', 18)
+                }
+                self._token_info_cache[token_address_lower] = info
+                return info
+            else:
+                return {'symbol': 'UNKNOWN', 'decimals': 18}
+        except Exception as e:
+            # Return default values if API call fails
+            return {'symbol': 'UNKNOWN', 'decimals': 18}
+    
     def fetch_raw_transactions(self, address, action='tokentx'):
         """
-        Uses the Etherscan API to fetch transactions for a given address
+        Uses Alchemy API to fetch transactions for a given address
         For the NFT tracker, the address to use is your personal sickle contract one so it only pulls transactions for your NFT's
+        Returns data in the same format as Etherscan API
         """
-        params = {
-            'chainid': '8453',  # base mainnet = 8453
-            'module': 'account',
-            'action': action,
-            # 'contractaddress': contract_address,
-            'address': address,
-            'page': '1',
-            'offset': '10000',
-            'startblock': self.start_block,
-            'endblock': self.end_block,
-            'sort': 'asc',
-            'apikey': self.api_key
+        is_nft = (action == 'tokennfttx')
+        
+        # Convert block numbers to hex for Alchemy
+        from_block = hex(self.start_block) if isinstance(self.start_block, int) else self.start_block
+        to_block = hex(self.end_block) if isinstance(self.end_block, int) and self.end_block < 99999999 else 'latest'
+        
+        # Use Alchemy's getAssetTransfers API
+        all_transfers = []
+        
+        if is_nft:
+            # For NFTs, query ERC721 transfers
+            params_list = [
+                {"fromAddress": address, "category": ["erc721"], "fromBlock": from_block, "toBlock": to_block, "withMetadata": True, "excludeZeroValue": False, "maxCount": "0x3e8"},
+                {"toAddress": address, "category": ["erc721"], "fromBlock": from_block, "toBlock": to_block, "withMetadata": True, "excludeZeroValue": False, "maxCount": "0x3e8"}
+            ]
+        else:
+            # For tokens, query ERC20 transfers only
+            # Note: Internal transactions (native ETH) are not supported on Base network by Alchemy
+            # ETH and WETH are treated the same - WETH is just wrapped ETH
+            params_list = [
+                {"fromAddress": address, "category": ["erc20"], "fromBlock": from_block, "toBlock": to_block, "withMetadata": True, "excludeZeroValue": False, "maxCount": "0x3e8"},
+                {"toAddress": address, "category": ["erc20"], "fromBlock": from_block, "toBlock": to_block, "withMetadata": True, "excludeZeroValue": False, "maxCount": "0x3e8"}
+            ]
+        
+        # Fetch with pagination
+        for params in params_list:
+            page_key = None
+            while True:
+                if page_key:
+                    params['pageKey'] = page_key
+                
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "alchemy_getAssetTransfers",
+                    "params": [params]
+                }
+                
+                response = requests.post(self.alchemy_url, json=payload, headers={"Content-Type": "application/json"})
+                response.raise_for_status()
+                data = response.json()
+                
+                if 'error' in data:
+                    print(f"Error fetching data: {data['error']}")
+                    break
+                
+                result = data.get('result', {})
+                transfers = result.get('transfers', [])
+                all_transfers.extend(transfers)
+                
+                page_key = result.get('pageKey')
+                if not page_key:
+                    break
+        
+        # Deduplicate
+        seen = set()
+        unique_transfers = []
+        for transfer in all_transfers:
+            tx_hash = transfer.get('hash', '').lower()
+            if is_nft:
+                token_id = str(transfer.get('erc721TokenId') or transfer.get('tokenId', ''))
+                key = (tx_hash, token_id)
+            else:
+                from_addr = transfer.get('from', '').lower()
+                to_addr = transfer.get('to', '').lower()
+                value = transfer.get('rawContract', {}).get('value', '')
+                key = (tx_hash, from_addr, to_addr, str(value))
+            
+            if key not in seen:
+                seen.add(key)
+                unique_transfers.append(transfer)
+        
+        # Convert Alchemy format to Etherscan format
+        results = []
+        for transfer in unique_transfers:
+            # Extract block number
+            block_num_hex = transfer.get('blockNum', '0x0')
+            if isinstance(block_num_hex, str):
+                block_num = int(block_num_hex, 16) if block_num_hex.startswith('0x') else int(block_num_hex)
+            else:
+                block_num = int(block_num_hex)
+            
+            # Extract timestamp
+            metadata = transfer.get('metadata', {})
+            timestamp = None
+            if metadata and isinstance(metadata, dict):
+                timestamp_str = metadata.get('blockTimestamp')
+                if timestamp_str:
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                        timestamp = int(dt.timestamp())
+                    except:
+                        pass
+            
+            tx_hash = transfer.get('hash', '')
+            from_addr = transfer.get('from', '').lower()
+            to_addr = transfer.get('to', '').lower()
+            
+            if is_nft:
+                # NFT transfer - convert to Etherscan format
+                # Alchemy provides tokenId in various formats - handle all cases
+                token_id_raw = transfer.get('erc721TokenId') or transfer.get('tokenId', '')
+                
+                # Convert to integer
+                if token_id_raw is None:
+                    token_id = 0
+                elif isinstance(token_id_raw, (int, float)):
+                    token_id = int(token_id_raw)
+                elif isinstance(token_id_raw, str):
+                    token_id_str = token_id_raw.strip()
+                    if not token_id_str or token_id_str == '0x' or token_id_str == '0x0':
+                        token_id = 0
+                    elif token_id_str.startswith('0x'):
+                        try:
+                            token_id = int(token_id_str, 16)
+                        except ValueError:
+                            token_id = 0
+                    else:
+                        try:
+                            token_id = int(token_id_str)
+                        except ValueError:
+                            token_id = 0
+                else:
+                    token_id = 0
+                
+                results.append({
+                    'blockNumber': str(block_num),
+                    'timeStamp': str(timestamp) if timestamp else '0',
+                    'hash': tx_hash,
+                    'from': from_addr,
+                    'to': to_addr,
+                    'tokenID': token_id  # Keep as integer
+                })
+            else:
+                # ERC20 transfer - convert to Etherscan format
+                raw_contract = transfer.get('rawContract', {})
+                value_hex = raw_contract.get('value', '0x0')
+                if isinstance(value_hex, str) and value_hex.startswith('0x'):
+                    value = str(int(value_hex, 16))
+                else:
+                    value = str(int(value_hex)) if value_hex else '0'
+                
+                contract_addr = raw_contract.get('address', '').lower()
+                # Get token symbol and decimals from contract
+                token_info = self._get_token_info(contract_addr)
+                
+                results.append({
+                    'blockNumber': str(block_num),
+                    'timeStamp': str(timestamp) if timestamp else '0',
+                    'hash': tx_hash,
+                    'from': from_addr,
+                    'to': to_addr,
+                    'value': value,
+                    'tokenSymbol': token_info['symbol'],
+                    'tokenDecimal': str(token_info['decimals'])
+                })
+        
+        return results
+    
+    def fetch_transfers_for_hash(self, tx_hash):
+        """
+        Fetch all ERC20 transfers for a specific transaction hash.
+        Used to get full transaction details for Deposit/Exit transactions.
+        """
+        # Get the transaction to find its block number
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_getTransactionByHash",
+            "params": [tx_hash]
         }
-
-        response = requests.get(f'{self.base_url}', params=params)
+        
+        response = requests.post(self.alchemy_url, json=payload, headers={"Content-Type": "application/json"})
+        response.raise_for_status()
         data = response.json()
-        if data["status"] != "1":
-            print("Error fetching data:", data["message"], data['result'])
+        
+        if "result" not in data or not data["result"]:
             return []
         
-        return data["result"]
+        block_num_hex = data["result"].get("blockNumber")
+        if not block_num_hex:
+            return []
+        
+        block_num = int(block_num_hex, 16) if isinstance(block_num_hex, str) else int(block_num_hex)
+        
+        # Query all ERC20 transfers for this specific block
+        params = {
+            "fromBlock": hex(block_num),
+            "toBlock": hex(block_num),
+            "category": ["erc20"],
+            "withMetadata": True,
+            "excludeZeroValue": False,
+            "maxCount": "0x3e8"
+        }
+        
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "alchemy_getAssetTransfers",
+            "params": [params]
+        }
+        
+        response = requests.post(self.alchemy_url, json=payload, headers={"Content-Type": "application/json"})
+        response.raise_for_status()
+        data = response.json()
+        
+        if 'error' in data:
+            return []
+        
+        result = data.get('result', {})
+        transfers = result.get('transfers', [])
+        
+        # Filter to only transfers in this specific transaction
+        tx_transfers = [t for t in transfers if t.get('hash', '').lower() == tx_hash.lower()]
+        
+        # Convert to our format
+        results = []
+        for transfer in tx_transfers:
+            block_num_hex = transfer.get('blockNum', '0x0')
+            if isinstance(block_num_hex, str):
+                block_num = int(block_num_hex, 16) if block_num_hex.startswith('0x') else int(block_num_hex)
+            else:
+                block_num = int(block_num_hex)
+            
+            metadata = transfer.get('metadata', {})
+            timestamp = None
+            if metadata and isinstance(metadata, dict):
+                timestamp_str = metadata.get('blockTimestamp')
+                if timestamp_str:
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                        timestamp = int(dt.timestamp())
+                    except:
+                        pass
+            
+            tx_hash_transfer = transfer.get('hash', '')
+            from_addr = transfer.get('from', '').lower()
+            to_addr = transfer.get('to', '').lower()
+            
+            raw_contract = transfer.get('rawContract', {})
+            value_hex = raw_contract.get('value', '0x0')
+            if isinstance(value_hex, str) and value_hex.startswith('0x'):
+                value = str(int(value_hex, 16))
+            else:
+                value = str(int(value_hex)) if value_hex else '0'
+            
+            contract_addr = raw_contract.get('address', '').lower()
+            token_info = self._get_token_info(contract_addr)
+            
+            results.append({
+                'blockNumber': str(block_num),
+                'timeStamp': str(timestamp) if timestamp else '0',
+                'hash': tx_hash_transfer,
+                'from': from_addr,
+                'to': to_addr,
+                'value': value,
+                'tokenSymbol': token_info['symbol'],
+                'tokenDecimal': str(token_info['decimals'])
+            })
+        
+        return results
 
     def fetch_transaction_details(self, tx_hash):
         """
         Fetches the details of a single transaction.  This is needed to get the method ID that was
-        used in the transaction.  It also retrieves the token ID (NFT ID), however right now it only
-        works for methods where the NFT already exists, like Harvest and Compound
+        used in the transaction.  Returns the method name and tokenID.
+        Note: tokenID should come from NFT transfers, not from parsing transaction input.
+        This method only extracts method name from input data.
         """
-        url = f"{self.base_url}?chainid=8453&module=proxy&action=eth_getTransactionByHash&txhash={tx_hash}&apikey={self.api_key}"
-        response = requests.get(url)
+        # Use Alchemy's eth_getTransactionByHash
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_getTransactionByHash",
+            "params": [tx_hash]
+        }
+        
+        response = requests.post(self.alchemy_url, json=payload, headers={"Content-Type": "application/json"})
+        response.raise_for_status()
         data = response.json()
         
-        if "result" in data and "input" in data["result"]:
+        if "result" in data and data["result"] and "input" in data["result"]:
             method_id = data["result"]["input"][:10]  # First 10 chars are the method ID
-            token_id_pos = 64 * 3 + 10
-            token_id = int(data["result"]["input"][token_id_pos:token_id_pos + 64], 16)
-            x = self.method_id_map.get(method_id.lower(), "Unknown")
-            print(f"{x} occured at tx {tx_hash[:6]}...{tx_hash[-4:]}")
-            return x, token_id
-        return "Unknown"
+            method_name = self.method_id_map.get(method_id.lower(), "Unknown")
+            print(f"{method_name} occured at tx {tx_hash[:6]}...{tx_hash[-4:]}")
+            # Don't try to extract tokenID from input - it's unreliable and position varies by method
+            # TokenID should come from NFT transfers instead
+            return method_name, 0
+        return "Unknown", 0
     
     def process_nft_transactions(self, nft_txns, token_txns):
         df = pd.DataFrame(nft_txns)
@@ -186,25 +474,123 @@ class SickleNFTtracker:
         df.rename(columns={'value': 'amount'}, inplace=True)  # Track as amount instead of value
         df.loc[df["from"].str.lower() == self.wallet.lower(), "amount"] *= -1  # Funds sent to contract/NFT are negative
 
-        # Filter only transactions where both 'from' and 'to' are in FILTER_ADDRESSES
+        # Filter to only wallet<->contract transfers (user interactions - taxable events)
         df = df[df["from"].isin(self.addr_filters) & df["to"].isin(self.addr_filters)]
+        
         # Link token transfers to NFT burn and mint transactions
         df = df.merge(self.nft_df[['hash', 'seriesID', 'eventType', 'tokenID']], on='hash', how='left')
-        # Remove duplicate token transfers within the same transaction hash
-        # df = df.drop_duplicates(subset=["hash", "from", "to", "amount", "tokenSymbol"])
-
+        
         # Get a list of hashes that don't have an event type yet
         tx_hashes = df[pd.isna(df["eventType"])]["hash"].unique()
-        # Fetch the event type and token ids for each hash
+        # Fetch the event type for each hash (tokenID should already be from NFT transfers)
         event_types = {}
-        token_ids = {}
         for hash in tx_hashes:
-            event_types[hash], token_ids[hash] = self.fetch_transaction_details(hash)
+            event_type, _ = self.fetch_transaction_details(hash)
+            event_types[hash] = event_type
 
-        # Apply the event type and token ids to the data frame by matching the hash value
+        # Apply the event type to the data frame by matching the hash value
         df.loc[df["hash"].isin(event_types.keys()), "eventType"] = df["hash"].map(event_types)
-        df.loc[df["hash"].isin(token_ids.keys()), "tokenID"] = df["hash"].map(token_ids)
-        df["tokenID"] = df["tokenID"].astype(int)
+        
+        # Targeted fix: For Deposit and Exit transactions ONLY, fetch full transaction details
+        # to check for missing WETH transfers
+        deposit_hashes = df[df["eventType"] == "Deposit"]["hash"].unique()
+        exit_hashes = df[df["eventType"] == "Exit"]["hash"].unique()
+        weth_to_add = []
+        
+        if len(deposit_hashes) > 0:
+            # For each Deposit transaction, fetch ALL transfers in that transaction
+            for tx_hash in deposit_hashes:
+                all_tx_transfers = self.fetch_transfers_for_hash(tx_hash)
+                df_tx = pd.DataFrame(all_tx_transfers)
+                if len(df_tx) > 0:
+                    df_tx["timeStamp"] = pd.to_datetime(pd.to_numeric(df_tx["timeStamp"], errors='coerce'), unit='s')
+                    df_tx["value"] = (df_tx["value"].astype(float) / (10 ** df_tx["tokenDecimal"].astype(int))).round(7)
+                    df_tx.rename(columns={'value': 'amount'}, inplace=True)
+                    
+                    # Look for contract -> pool WETH transfers in this transaction
+                    contract_to_pool_weth = df_tx[
+                        (df_tx['from'] == self.sickle) &
+                        (~df_tx['to'].isin(self.addr_filters)) &  # To pool
+                        (df_tx['tokenSymbol'] == 'WETH')
+                    ]
+                    
+                    # Check if we already have WETH in wallet->contract for this hash
+                    has_weth = df[
+                        (df['hash'] == tx_hash) &
+                        (df['tokenSymbol'] == 'WETH') &
+                        (df['from'] == self.wallet) &
+                        (df['to'] == self.sickle)
+                    ]
+                    
+                    if len(has_weth) == 0 and len(contract_to_pool_weth) > 0:
+                        # Missing WETH - add it as wallet->contract (negative amount for deposit)
+                        weth_row = contract_to_pool_weth.iloc[0].copy()
+                        weth_row['from'] = self.wallet
+                        weth_row['to'] = self.sickle
+                        weth_row['amount'] = -abs(weth_row['amount'])  # Negative for deposit
+                        # Get eventType and other fields from df
+                        matching_rows = df[df['hash'] == tx_hash]
+                        if len(matching_rows) > 0:
+                            weth_row['eventType'] = matching_rows['eventType'].iloc[0]
+                            weth_row['seriesID'] = matching_rows['seriesID'].iloc[0] if 'seriesID' in matching_rows.columns else pd.NA
+                            weth_row['tokenID'] = matching_rows['tokenID'].iloc[0] if 'tokenID' in matching_rows.columns else pd.NA
+                        else:
+                            weth_row['eventType'] = 'Deposit'
+                            weth_row['seriesID'] = pd.NA
+                            weth_row['tokenID'] = pd.NA
+                        weth_to_add.append(weth_row)
+        
+        if len(exit_hashes) > 0:
+            # For each Exit transaction, fetch ALL transfers in that transaction
+            for tx_hash in exit_hashes:
+                all_tx_transfers = self.fetch_transfers_for_hash(tx_hash)
+                df_tx = pd.DataFrame(all_tx_transfers)
+                if len(df_tx) > 0:
+                    df_tx["timeStamp"] = pd.to_datetime(pd.to_numeric(df_tx["timeStamp"], errors='coerce'), unit='s')
+                    df_tx["value"] = (df_tx["value"].astype(float) / (10 ** df_tx["tokenDecimal"].astype(int))).round(7)
+                    df_tx.rename(columns={'value': 'amount'}, inplace=True)
+                    
+                    # Look for contract -> wallet WETH transfers in this transaction
+                    contract_to_wallet_weth = df_tx[
+                        (df_tx['from'] == self.sickle) &
+                        (df_tx['to'] == self.wallet) &  # To wallet
+                        (df_tx['tokenSymbol'] == 'WETH')
+                    ]
+                    
+                    # Check if we already have WETH in contract->wallet for this hash
+                    has_weth = df[
+                        (df['hash'] == tx_hash) &
+                        (df['tokenSymbol'] == 'WETH') &
+                        (df['from'] == self.sickle) &
+                        (df['to'] == self.wallet)
+                    ]
+                    
+                    if len(has_weth) == 0 and len(contract_to_wallet_weth) > 0:
+                        # Missing WETH return - add it as contract->wallet (positive amount for exit)
+                        weth_row = contract_to_wallet_weth.iloc[0].copy()
+                        weth_row['amount'] = abs(weth_row['amount'])  # Positive for exit/withdrawal
+                        # Get eventType and other fields from df
+                        matching_rows = df[df['hash'] == tx_hash]
+                        if len(matching_rows) > 0:
+                            weth_row['eventType'] = matching_rows['eventType'].iloc[0]
+                            weth_row['seriesID'] = matching_rows['seriesID'].iloc[0] if 'seriesID' in matching_rows.columns else pd.NA
+                            weth_row['tokenID'] = matching_rows['tokenID'].iloc[0] if 'tokenID' in matching_rows.columns else pd.NA
+                        else:
+                            weth_row['eventType'] = 'Exit'
+                            weth_row['seriesID'] = pd.NA
+                            weth_row['tokenID'] = pd.NA
+                        weth_to_add.append(weth_row)
+        
+        # Add missing WETH transfers
+        if weth_to_add:
+            df_weth = pd.DataFrame(weth_to_add)
+            df = pd.concat([df, df_weth], ignore_index=True)
+        
+        # TokenID should already be populated from the NFT transfers merge above
+        # Just ensure it's the right type
+        if "tokenID" in df.columns:
+            # Convert to int64 where possible
+            df["tokenID"] = pd.to_numeric(df["tokenID"], errors='coerce').astype('Int64')
 
         # Fill missing seriesID using tokenID mapping
         df.loc[df["seriesID"].isna(), "seriesID"] = df["tokenID"].map(self.series_map)
@@ -316,7 +702,23 @@ class SickleNFTtracker:
         nft_txns = self.fetch_raw_transactions(self.sickle, 'tokennfttx')
         if len(nft_txns) == 0:
             print("No NFT transactions found.  Continuing")
-        token_txns = self.fetch_raw_transactions(self.sickle, 'tokentx')
+        
+        # Query token transfers for both contract and wallet addresses
+        # This ensures we capture wallet->contract transfers (from wallet query) 
+        # and contract->wallet transfers (from contract query)
+        token_txns_contract = self.fetch_raw_transactions(self.sickle, 'tokentx')
+        token_txns_wallet = self.fetch_raw_transactions(self.wallet, 'tokentx')
+        
+        # Combine and deduplicate (same transfer might appear in both queries)
+        all_token_txns = token_txns_contract + token_txns_wallet
+        # Deduplicate by hash, from, to, value (same as in fetch_raw_transactions)
+        seen = set()
+        token_txns = []
+        for tx in all_token_txns:
+            key = (tx['hash'], tx['from'], tx['to'], tx['value'])
+            if key not in seen:
+                seen.add(key)
+                token_txns.append(tx)
         if len(token_txns) == 0:
             print("No Token transfer transactions found.  Checking old DF")
             if self.df_old is not None:
